@@ -47,7 +47,7 @@ export const getShipmentById = async (req: Request, res: Response) => {
     const { shipmentId } = req.params;
 
     const shipment = await prisma.shipment.findUnique({
-      where: { id: shipmentId },
+      where: { id: shipmentId as string },
       include: {
         carrier: true,
         warehouse: true,
@@ -151,7 +151,7 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
       return ApiResponse.error(res, "status is required", 400);
     }
 
-    const existing = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+    const existing = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     if (!existing) {
       return ApiResponse.notFound(res, "Shipment not found");
     }
@@ -180,7 +180,7 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
     }
 
     const shipment = await prisma.shipment.update({
-      where: { id: shipmentId },
+      where: { id: shipmentId as string },
       data: updateData,
     });
 
@@ -213,7 +213,7 @@ export const updateRiskScore = async (req: Request, res: Response) => {
     }
 
     const shipment = await prisma.shipment.update({
-      where: { id: shipmentId },
+      where: { id: shipmentId as string },
       data: updateData,
     });
 
@@ -234,7 +234,7 @@ export const rerouteShipment = async (req: Request, res: Response) => {
       return ApiResponse.error(res, "carrier_id is required", 400);
     }
 
-    const shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+    const shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     if (!shipment) {
       return ApiResponse.notFound(res, "Shipment not found");
     }
@@ -245,7 +245,7 @@ export const rerouteShipment = async (req: Request, res: Response) => {
     }
 
     const updated = await prisma.shipment.update({
-      where: { id: shipmentId },
+      where: { id: shipmentId as string },
       data: {
         carrierId: carrier_id,
         agentNotes: reason || `Rerouted to carrier ${newCarrier.code}`,
@@ -262,7 +262,7 @@ export const rerouteShipment = async (req: Request, res: Response) => {
         actionId,
         actionType: "reroute",
         targetType: "shipment",
-        targetId: shipmentId,
+        targetId: shipmentId as string,
         description: `Rerouted from previous carrier to ${newCarrier.name}`,
         reasoning: reason || "Manual reroute",
         confidence: 0.85,

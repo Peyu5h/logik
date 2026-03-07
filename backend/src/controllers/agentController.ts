@@ -25,16 +25,7 @@ export const observe = async (_req: Request, res: Response) => {
       take: 10,
     });
 
-    await prisma.log.create({
-      data: {
-        logId: `log-observe-${Date.now().toString(36)}`,
-        timestamp: new Date(),
-        eventType: "agent_observe",
-        source: "agent_engine",
-        severity: "low",
-        message: `Agent observing ${shipments.length} shipments, ${incidents.length} active incidents`,
-      },
-    });
+
 
     const normalized = shipments.map((s) => ({
       _id: s.id,
@@ -104,7 +95,7 @@ export const assessRisk = async (req: Request, res: Response) => {
       });
     } else {
       shipment = await prisma.shipment.findUnique({
-        where: { id: shipmentId },
+        where: { id: shipmentId as string },
         include: {
           carrier: true,
           warehouse: true,
@@ -249,7 +240,7 @@ export const reroute = async (req: Request, res: Response) => {
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({ where: { caseId: caseIdNum }, include: { carrier: true } });
     } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId }, include: { carrier: true } });
+      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string }, include: { carrier: true } });
     }
 
     if (!shipment) {
@@ -348,7 +339,7 @@ export const escalate = async (req: Request, res: Response) => {
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({ where: { caseId: caseIdNum } });
     } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     }
 
     if (!shipment) {
@@ -423,7 +414,7 @@ export const reprioritize = async (req: Request, res: Response) => {
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({ where: { caseId: caseIdNum } });
     } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     }
 
     if (!shipment) {
@@ -493,7 +484,7 @@ export const updateEta = async (req: Request, res: Response) => {
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({ where: { caseId: caseIdNum } });
     } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     }
 
     if (!shipment) {
@@ -590,7 +581,7 @@ export const carrierReliability = async (req: Request, res: Response) => {
     const { carrier: carrierCode } = req.params;
 
     const carrier = await prisma.carrier.findFirst({
-      where: { OR: [{ code: carrierCode }, { id: carrierCode }] },
+      where: { OR: [{ code: carrierCode as string }, { id: carrierCode as string }] },
     });
 
     if (!carrier) {
@@ -607,17 +598,17 @@ export const carrierReliability = async (req: Request, res: Response) => {
         delay: true,
         slaBreached: true,
         riskScore: true,
-      },
+      } as any,
     });
 
-    const delayed = shipments.filter((s) => s.status === "delayed");
-    const delivered = shipments.filter((s) => s.status === "delivered");
-    const breached = shipments.filter((s) => s.slaBreached);
+    const delayed = shipments.filter((s: any) => s.status === "delayed");
+    const delivered = shipments.filter((s: any) => s.status === "delivered");
+    const breached = shipments.filter((s: any) => s.slaBreached);
     const avgDelay = shipments.length > 0
-      ? Math.round(shipments.reduce((sum, s) => sum + s.delay, 0) / shipments.length)
+      ? Math.round(shipments.reduce((sum: number, s: any) => sum + (s.delay || 0), 0) / shipments.length)
       : 0;
     const avgRisk = shipments.length > 0
-      ? Math.round(shipments.reduce((sum, s) => sum + s.riskScore, 0) / shipments.length)
+      ? Math.round(shipments.reduce((sum: number, s: any) => sum + (s.riskScore || 0), 0) / shipments.length)
       : 0;
 
     return ApiResponse.success(res, {
@@ -667,7 +658,7 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({ where: { caseId: caseIdNum } });
     } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     }
 
     if (!shipment) {

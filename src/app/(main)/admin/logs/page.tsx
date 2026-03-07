@@ -13,7 +13,6 @@ import {
   FileWarning,
   AlertOctagon,
   CheckCircle2,
-  ChevronRight,
   AlertTriangle,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
@@ -132,17 +131,6 @@ const SEVERITY_COLORS: Record<string, string> = {
   critical: "text-red-500",
 };
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: "bg-yellow-500",
-  picked_up: "bg-blue-500",
-  in_transit: "bg-blue-500",
-  at_warehouse: "bg-purple-500",
-  out_for_delivery: "bg-cyan-500",
-  delivered: "bg-emerald-500",
-  delayed: "bg-red-500",
-  cancelled: "bg-zinc-500",
-};
-
 function formatTimestamp(ts: string) {
   const d = new Date(ts);
   return d.toLocaleTimeString([], {
@@ -183,10 +171,8 @@ export default function LogsPage() {
   const [newLogIds, setNewLogIds] = useState<Set<string>>(new Set());
   const loaderRef = useRef<HTMLDivElement>(null);
 
-  // shipment selector state
   const [demoShipments, setDemoShipments] = useState<ShipmentState[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState<number>(1);
-  const [isLoadingShipments, setIsLoadingShipments] = useState(false);
 
   const allRemoteLogs: SystemLog[] =
     logsData?.pages?.flatMap((page) => page.logs) ?? [];
@@ -217,16 +203,7 @@ export default function LogsPage() {
 
   // fetch demo shipments
   const fetchShipments = useCallback(async () => {
-    setIsLoadingShipments(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/agent/observe`);
-      if (res.ok) {
-        const data = await res.json();
-        const shipments = (data.data?.shipments || []) as ShipmentState[];
-        setDemoShipments(shipments);
-      }
-    } catch {
-      // fallback: try individual case ids
       const results: ShipmentState[] = [];
       for (const cid of [1, 2, 3]) {
         try {
@@ -239,9 +216,9 @@ export default function LogsPage() {
           // skip
         }
       }
-      setDemoShipments(results);
-    } finally {
-      setIsLoadingShipments(false);
+      if (results.length > 0) setDemoShipments(results);
+    } catch {
+      // silent
     }
   }, []);
 
@@ -250,19 +227,19 @@ export default function LogsPage() {
     fetchShipments();
   }, [fetchShipments]);
 
-  // poll shipments every 2 seconds
+  // poll shipments every 5 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       fetchShipments();
-    }, 2000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [fetchShipments]);
 
-  // poll logs every 3 seconds
+  // poll logs every 5 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       refetch();
-    }, 3000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [refetch]);
 
@@ -303,7 +280,6 @@ export default function LogsPage() {
     addLocalLog(logEntry);
 
     try {
-      // fire the trigger endpoint
       const response = await fetch(
         `${API_BASE_URL}/api/triggers/${selectedCaseId}/${card.issue}`,
         {
@@ -319,7 +295,6 @@ export default function LogsPage() {
         const changes = d.changes || {};
         const actions = d.actions || {};
 
-        // log the result
         const resultLog: SystemLog = {
           id: `local-result-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
           timestamp: new Date().toISOString(),
@@ -330,7 +305,6 @@ export default function LogsPage() {
         };
         addLocalLog(resultLog);
 
-        // persist log to backend
         createLog.mutate({
           id: resultLog.id,
           timestamp: resultLog.timestamp,
@@ -341,8 +315,6 @@ export default function LogsPage() {
         });
 
         toast.success(`${card.title} triggered for Case ${selectedCaseId}`);
-
-        // refresh shipments immediately
         fetchShipments();
       } else {
         toast.error(result.error?.[0]?.message || "Trigger failed");
@@ -380,142 +352,6 @@ export default function LogsPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* left: shipment selector + state */}
-      <div className="hidden w-72 flex-col border-r lg:flex overflow-hidden">
-        <div className="shrink-0 border-b px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Package className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Demo Shipments</h2>
-          </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Select a case to trigger events
-          </p>
-        </div>
-
-        <div className="shrink-0 border-b">
-          {[1, 2, 3].map((cid) => {
-            const s = demoShipments.find((sh) => sh.caseId === cid);
-            const isActive = selectedCaseId === cid;
-            return (
-              <button
-                key={cid}
-                onClick={() => setSelectedCaseId(cid)}
-                className={cn(
-                  "flex w-full items-start gap-3 border-b last:border-b-0 px-4 py-3 text-left transition-colors",
-                  isActive
-                    ? "bg-primary/5"
-                    : "hover:bg-muted/50"
-                )}
-              >
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-bold">
-                  {cid}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium truncate">
-                      {s?.trackingId || `SHP-CASE00${cid}`}
-                    </span>
-                    {s && (
-                      <span
-                        className={cn(
-                          "h-1.5 w-1.5 rounded-full shrink-0",
-                          STATUS_COLORS[s.status] || "bg-zinc-400"
-                        )}
-                      />
-                    )}
-                  </div>
-                  {s ? (
-                    <>
-                      <p className="text-muted-foreground text-[11px] truncate mt-0.5">
-                        {s.origin?.city || "?"} → {s.destination?.city || "?"}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <span className="text-[10px] capitalize text-muted-foreground">
-                          {s.status.replace(/_/g, " ")}
-                        </span>
-                        {s.delay > 0 && (
-                          <span className="text-[10px] text-red-500 font-medium">
-                            +{formatDelayHrs(s.delay)}
-                          </span>
-                        )}
-                        {s.slaBreached && (
-                          <span className="text-[10px] text-red-600 font-semibold">
-                            SLA!
-                          </span>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <p className="text-muted-foreground text-[10px] mt-0.5">
-                      Loading...
-                    </p>
-                  )}
-                </div>
-                <ChevronRight
-                  className={cn(
-                    "h-4 w-4 shrink-0 mt-1",
-                    isActive ? "text-primary" : "text-muted-foreground/30"
-                  )}
-                />
-              </button>
-            );
-          })}
-        </div>
-
-        {/* selected shipment detail */}
-        <ScrollArea className="flex-1">
-          {selectedShipment ? (
-            <div className="p-4 space-y-3">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">
-                Case {selectedShipment.caseId} State
-              </h3>
-
-              <div className="space-y-2 text-xs">
-                <Row label="Status" value={selectedShipment.status.replace(/_/g, " ")}
-                  color={selectedShipment.status === "delayed" ? "text-red-500" : selectedShipment.status === "delivered" ? "text-emerald-500" : "text-foreground"} />
-                <Row label="Priority" value={selectedShipment.priority}
-                  color={selectedShipment.priority === "urgent" ? "text-red-500" : selectedShipment.priority === "high" ? "text-orange-500" : "text-foreground"} />
-                <Row label="Delay" value={formatDelayHrs(selectedShipment.delay)}
-                  color={selectedShipment.delay > 0 ? "text-red-500" : "text-foreground"} />
-                <Row label="Risk" value={`${selectedShipment.riskScore}%`}
-                  color={selectedShipment.riskScore >= 70 ? "text-red-500" : selectedShipment.riskScore >= 40 ? "text-orange-500" : "text-foreground"} />
-                <Row label="Value" value={`INR ${selectedShipment.value?.toLocaleString("en-IN") || "0"}`} />
-                <Row label="Carrier" value={selectedShipment.carrier?.code || "unassigned"} />
-                <Row label="Warehouse" value={selectedShipment.warehouse?.code || "none"} />
-                <Row label="SLA Breach" value={selectedShipment.slaBreached ? "YES" : "No"}
-                  color={selectedShipment.slaBreached ? "text-red-600 font-semibold" : "text-emerald-500"} />
-                <Row label="Rerouted" value={selectedShipment.rerouted ? "Yes" : "No"}
-                  color={selectedShipment.rerouted ? "text-amber-500" : "text-foreground"} />
-                <Row label="Escalated" value={selectedShipment.escalated ? "Yes" : "No"}
-                  color={selectedShipment.escalated ? "text-red-500" : "text-foreground"} />
-
-                {selectedShipment.initialEta && (
-                  <Row label="Initial ETA" value={new Date(selectedShipment.initialEta).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} />
-                )}
-                {selectedShipment.finalEta && (
-                  <Row label="Final ETA" value={new Date(selectedShipment.finalEta).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                    color={selectedShipment.delay > 0 ? "text-red-500" : "text-foreground"} />
-                )}
-                {selectedShipment.slaDeadline && (
-                  <Row label="SLA Deadline" value={new Date(selectedShipment.slaDeadline).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} />
-                )}
-              </div>
-
-              {selectedShipment.agentNotes && (
-                <div className="mt-3 rounded-md bg-muted/50 p-2">
-                  <span className="text-[10px] text-muted-foreground font-medium uppercase">Agent Notes</span>
-                  <p className="text-[11px] text-foreground mt-0.5">{selectedShipment.agentNotes}</p>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center justify-center py-10">
-              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-            </div>
-          )}
-        </ScrollArea>
-      </div>
-
       {/* center: logs panel */}
       <div className="flex flex-1 flex-col overflow-hidden">
         <div className="shrink-0 flex items-center justify-between border-b px-6 py-4">
@@ -625,7 +461,7 @@ export default function LogsPage() {
             {mergedLogs.length} log entries
           </span>
           <span className="text-[10px] text-muted-foreground">
-            Polling every 3s
+            Polling every 5s
           </span>
         </div>
       </div>
@@ -645,17 +481,57 @@ export default function LogsPage() {
           </p>
         </div>
 
-        {/* delay thresholds info */}
-        <div className="shrink-0 border-b px-4 py-2 bg-muted/30">
-          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mb-1">
-            Auto-action thresholds
+        {/* case selector */}
+        <div className="shrink-0 border-b px-4 py-3">
+          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mb-2">
+            Select Case
           </p>
-          <div className="space-y-0.5 text-[10px] text-muted-foreground">
-            <p>2hrs delay → carrier reassigned</p>
-            <p>6hrs delay → email to consumer</p>
-            <p>10hrs delay → warehouse reroute + new carrier</p>
-            <p>SLA breach → auto-escalate + email</p>
+          <div className="flex items-center gap-2">
+            {[1, 2, 3].map((cid) => {
+              const s = demoShipments.find((sh) => sh.caseId === cid);
+              const isActive = selectedCaseId === cid;
+              return (
+                <button
+                  key={cid}
+                  onClick={() => setSelectedCaseId(cid)}
+                  className={cn(
+                    "flex-1 rounded-md border px-2 py-2 text-center transition-colors",
+                    isActive
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border hover:bg-muted/50 text-muted-foreground"
+                  )}
+                >
+                  <p className="text-[10px] font-bold">Case {cid}</p>
+                  {s ? (
+                    <p className="text-[9px] mt-0.5 truncate">
+                      {s.origin?.city || "?"} → {s.destination?.city || "?"}
+                    </p>
+                  ) : (
+                    <p className="text-[9px] mt-0.5">Loading...</p>
+                  )}
+                </button>
+              );
+            })}
           </div>
+
+          {selectedShipment && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap text-[10px]">
+              <span className="capitalize text-muted-foreground">
+                {selectedShipment.status.replace(/_/g, " ")}
+              </span>
+              {selectedShipment.delay > 0 && (
+                <span className="text-red-500 font-medium">
+                  +{formatDelayHrs(selectedShipment.delay)}
+                </span>
+              )}
+              {selectedShipment.slaBreached && (
+                <span className="text-red-600 font-semibold">SLA!</span>
+              )}
+              {selectedShipment.rerouted && (
+                <span className="text-amber-500">Rerouted</span>
+              )}
+            </div>
+          )}
         </div>
 
         <ScrollArea className="flex-1">
@@ -665,7 +541,7 @@ export default function LogsPage() {
                 key={card.id}
                 className="rounded-lg border border-border p-3"
               >
-                <div className="flex items-start gap-2.5 mb-2">
+                <div className="flex items-center gap-2.5 mb-2">
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
                     {card.icon}
                   </div>
@@ -724,26 +600,6 @@ export default function LogsPage() {
           </div>
         </ScrollArea>
       </div>
-    </div>
-  );
-}
-
-// helper row component for shipment state display
-function Row({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-}) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-muted-foreground text-[11px]">{label}</span>
-      <span className={cn("text-[11px] font-medium capitalize", color || "text-foreground")}>
-        {value}
-      </span>
     </div>
   );
 }

@@ -12,7 +12,6 @@ import {
   ArrowRight,
   RefreshCw,
   Search,
-  Activity,
   TrendingUp,
   ShieldAlert,
 } from "lucide-react";
@@ -215,14 +214,14 @@ export default function AdminDashboard() {
 
   const isLoading = isLoadingDashboard || isLoadingShipments;
 
-  // realtime polling every 2 seconds
+  // polling every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       refetchDashboard();
       refetchStats();
       refetchShipments();
       refetchWarehouses();
-    }, 2000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [refetchDashboard, refetchStats, refetchShipments, refetchWarehouses]);
 
@@ -429,8 +428,8 @@ export default function AdminDashboard() {
           {/* carriers + agent actions */}
           <div className="flex flex-col shrink-0 max-h-[45%] overflow-hidden">
             <div className="shrink-0 flex items-center gap-2 border-b px-4 py-2.5">
-              <Activity className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Carriers & Agent Activity</span>
+              <Truck className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Carriers</span>
             </div>
             <ScrollArea className="flex-1">
               {/* carriers */}
@@ -467,39 +466,10 @@ export default function AdminDashboard() {
                 </div>
               )}
 
-              {/* recent agent actions */}
-              {recentActions.length > 0 && (
-                <div className="border-t px-4 py-3">
-                  <p className="text-[10px] font-medium uppercase text-muted-foreground tracking-wide mb-2">
-                    Recent Agent Actions
-                  </p>
-                  <div className="space-y-2">
-                    {recentActions.slice(0, 5).map((action) => (
-                      <div key={action.action_id} className="rounded border border-border/40 p-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-medium uppercase text-muted-foreground">
-                            {action.action_type}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {Math.round(action.confidence * 100)}% conf
-                          </span>
-                        </div>
-                        <p className="mt-0.5 text-xs text-foreground line-clamp-2">
-                          {action.description}
-                        </p>
-                        <p className="mt-0.5 text-[10px] text-muted-foreground/60">
-                          {formatRelativeTime(action.executed_at)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {topCarriers.length === 0 && recentActions.length === 0 && (
+              {topCarriers.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-10">
-                  <Activity className="h-6 w-6 text-muted-foreground" />
-                  <p className="mt-2 text-xs text-muted-foreground">No activity yet</p>
+                  <Truck className="h-6 w-6 text-muted-foreground" />
+                  <p className="mt-2 text-xs text-muted-foreground">No carriers yet</p>
                 </div>
               )}
             </ScrollArea>

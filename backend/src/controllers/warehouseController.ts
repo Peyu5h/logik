@@ -52,7 +52,7 @@ export const getWarehouseById = async (req: Request, res: Response) => {
     const { warehouseId } = req.params;
 
     const warehouse = await prisma.warehouse.findUnique({
-      where: { id: warehouseId },
+      where: { id: warehouseId as string },
       include: {
         inventoryItems: { orderBy: { name: "asc" } },
         shipments: {
@@ -89,7 +89,7 @@ export const getWarehouseById = async (req: Request, res: Response) => {
       avg_process_time: warehouse.avgProcessTime,
       regions: warehouse.regions,
       is_active: warehouse.isActive,
-      inventory: warehouse.inventoryItems.map((item) => ({
+      inventory: (warehouse as any).inventoryItems.map((item: any) => ({
         _id: item.id,
         sku: item.sku,
         name: item.name,
@@ -100,7 +100,7 @@ export const getWarehouseById = async (req: Request, res: Response) => {
         low_stock: item.quantity - item.reserved <= item.reorderPoint,
         last_restocked: item.lastRestocked,
       })),
-      active_shipments: warehouse.shipments.map((s) => ({
+      active_shipments: (warehouse as any).shipments.map((s: any) => ({
         _id: s.id,
         tracking_id: s.trackingId,
         status: s.status,
@@ -130,7 +130,7 @@ export const updateWarehouseStatus = async (req: Request, res: Response) => {
     if (congestion_level) updateData.congestionLevel = congestion_level;
     if (current_load !== undefined) {
       updateData.currentLoad = current_load;
-      const wh = await prisma.warehouse.findUnique({ where: { id: warehouseId } });
+      const wh = await prisma.warehouse.findUnique({ where: { id: warehouseId as string } });
       if (wh) {
         updateData.utilizationPct = Math.round((current_load / wh.capacity) * 1000) / 10;
       }
@@ -138,7 +138,7 @@ export const updateWarehouseStatus = async (req: Request, res: Response) => {
     if (throughput_rate !== undefined) updateData.throughputRate = throughput_rate;
 
     const warehouse = await prisma.warehouse.update({
-      where: { id: warehouseId },
+      where: { id: warehouseId as string },
       data: updateData,
     });
 
@@ -204,7 +204,7 @@ export const updateInventory = async (req: Request, res: Response) => {
     if (reserved !== undefined) updateData.reserved = reserved;
 
     const item = await prisma.inventoryItem.update({
-      where: { id: itemId },
+      where: { id: itemId as string },
       data: updateData,
     });
 
@@ -360,7 +360,7 @@ export const evaluateAgentAction = async (req: Request, res: Response) => {
     }
 
     const action = await prisma.agentAction.update({
-      where: { actionId },
+      where: { actionId: actionId as string },
       data: {
         wasCorrect: was_correct,
         outcome: outcome || (was_correct ? "success" : "incorrect"),

@@ -1,4 +1,6 @@
-import { Router } from "express";
+import { Router, Request, Response } from "express";
+import prisma from "../config/database.js";
+import ApiResponse from "../utils/apiResponse.js";
 import {
   getShipments,
   getShipmentById,
@@ -11,6 +13,35 @@ import {
 } from "../controllers/shipmentController.js";
 
 const router = Router();
+
+// link demo shipments (caseId 1,2,3) to a consumer by email
+router.post("/link-demo", async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return ApiResponse.error(res, "email is required", 400);
+    }
+
+    const consumer = await prisma.user.findUnique({ where: { email } });
+    if (!consumer) {
+      return ApiResponse.error(res, `No user found with email ${email}`, 404);
+    }
+
+    const result = await prisma.shipment.updateMany({
+      where: { caseId: { in: [1, 2, 3] } },
+      data: { consumerId: consumer.id },
+    });
+
+    return ApiResponse.success(res, {
+      linked: result.count,
+      consumerId: consumer.id,
+      email: consumer.email,
+    });
+  } catch (error) {
+    console.error("[Shipments] link-demo error:", error);
+    return ApiResponse.error(res, "Failed to link demo shipments", 500);
+  }
+});
 
 // shipment stats overview
 router.get("/stats", getShipmentStats);

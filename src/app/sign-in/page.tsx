@@ -31,7 +31,7 @@ export default function SignInPage() {
   const handleQuickLogin = (type: "consumer" | "admin") => {
     const credentials = {
       consumer: { email: "rahul@acmecorp.com", password: "12345678" },
-      admin: { email: "admin@logistix.com", password: "12345678" },
+      admin: { email: "admin@logistix.com", password: "admin123" },
     };
     const creds = credentials[type];
     setEmail(creds.email);

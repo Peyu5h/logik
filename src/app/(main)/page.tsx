@@ -174,11 +174,11 @@ export default function ConsumerDashboard() {
   const { user } = useUser();
   const { data, isLoading, refetch } = useMyShipments();
 
-  // realtime polling every 2 seconds
+  // polling every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       refetch();
-    }, 2000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [refetch]);
   const createShipment = useCreateShipment();

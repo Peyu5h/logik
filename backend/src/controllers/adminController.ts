@@ -116,7 +116,7 @@ export const getIncidentById = async (req: Request, res: Response) => {
     const { incidentId } = req.params;
 
     const incident = await prisma.incident.findUnique({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       include: {
         shipment: {
           include: {
@@ -148,7 +148,7 @@ export const getIncidentMessages = async (req: Request, res: Response) => {
     const { since } = req.query;
 
     const chatHistory = await prisma.chatHistory.findUnique({
-      where: { incidentId },
+      where: { incidentId: incidentId as string },
     });
 
     if (!chatHistory) {
@@ -200,7 +200,7 @@ export const sendAdminMessage = async (req: Request, res: Response) => {
     }
 
     const incident = await prisma.incident.findUnique({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       include: { chatHistory: true },
     });
 
@@ -219,25 +219,25 @@ export const sendAdminMessage = async (req: Request, res: Response) => {
     };
 
     // create chat history if it doesn't exist
-    if (!incident.chatHistory) {
+    if (!(incident as any).chatHistory) {
       await prisma.chatHistory.create({
         data: {
-          sessionId: incidentId,
-          incidentId,
-          messages: [adminMessageData],
+          sessionId: incidentId as string,
+          incidentId: incidentId as string,
+          messages: [adminMessageData as any],
         },
       });
     } else {
       await prisma.chatHistory.update({
-        where: { incidentId },
+        where: { incidentId: incidentId as string },
         data: {
-          messages: { push: adminMessageData },
+          messages: { push: adminMessageData as any },
         },
       });
     }
 
     await prisma.incident.update({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       data: {
         assignedAgentId: admin_id,
         status: "in_progress",
@@ -264,7 +264,7 @@ export const escalateIncident = async (req: Request, res: Response) => {
     const { reason } = req.body;
 
     const incident = await prisma.incident.findUnique({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
     });
 
     if (!incident) {
@@ -272,7 +272,7 @@ export const escalateIncident = async (req: Request, res: Response) => {
     }
 
     const updated = await prisma.incident.update({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       data: {
         isEscalated: true,
         escalatedAt: new Date(),
@@ -294,20 +294,20 @@ export const escalateIncident = async (req: Request, res: Response) => {
     };
 
     const existingChat = await prisma.chatHistory.findUnique({
-      where: { incidentId },
+      where: { incidentId: incidentId as string },
     });
 
     if (existingChat) {
       await prisma.chatHistory.update({
-        where: { incidentId },
-        data: { messages: { push: systemMessage } },
+        where: { incidentId: incidentId as string },
+        data: { messages: { push: systemMessage as any } },
       });
     } else {
       await prisma.chatHistory.create({
         data: {
-          sessionId: incidentId,
-          incidentId,
-          messages: [systemMessage],
+          sessionId: incidentId as string,
+          incidentId: incidentId as string,
+          messages: [systemMessage as any],
         },
       });
     }
@@ -344,7 +344,7 @@ export const resolveIncident = async (req: Request, res: Response) => {
     }
 
     const incident = await prisma.incident.findUnique({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       include: { shipment: true },
     });
 
@@ -353,7 +353,7 @@ export const resolveIncident = async (req: Request, res: Response) => {
     }
 
     const updated = await prisma.incident.update({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       data: {
         status: "resolved",
         isEscalated: false,
@@ -375,13 +375,13 @@ export const resolveIncident = async (req: Request, res: Response) => {
     };
 
     const existingChat = await prisma.chatHistory.findUnique({
-      where: { incidentId },
+      where: { incidentId: incidentId as string },
     });
 
     if (existingChat) {
       await prisma.chatHistory.update({
-        where: { incidentId },
-        data: { messages: { push: resolutionMessage } },
+        where: { incidentId: incidentId as string },
+        data: { messages: { push: resolutionMessage as any } },
       });
     }
 
@@ -424,7 +424,7 @@ export const updateIncidentSeverity = async (req: Request, res: Response) => {
     }
 
     const updated = await prisma.incident.update({
-      where: { id: incidentId },
+      where: { id: incidentId as string },
       data: { severity },
     });
 

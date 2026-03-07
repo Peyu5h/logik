@@ -21,9 +21,23 @@ async function main() {
   console.log("+ admin user:", admin.email);
 
   const userPassword = await bcrypt.hash("user123", 10);
+
+  // primary consumer - rahul@acmecorp.com
   const consumer1 = await prisma.user.upsert({
+    where: { email: "rahul@acmecorp.com" },
+    update: { password: userPassword, role: "consumer", name: "Rahul Sharma" },
+    create: {
+      email: "rahul@acmecorp.com",
+      password: userPassword,
+      name: "Rahul Sharma",
+      role: "consumer",
+    },
+  });
+
+  // legacy email alias - points to same logical user for backward compat
+  const consumer1Legacy = await prisma.user.upsert({
     where: { email: "rahul@example.com" },
-    update: { password: userPassword, role: "consumer" },
+    update: { password: userPassword, role: "consumer", name: "Rahul Sharma" },
     create: {
       email: "rahul@example.com",
       password: userPassword,
@@ -42,7 +56,7 @@ async function main() {
       role: "consumer",
     },
   });
-  console.log("+ 2 consumer users");
+  console.log("+ 3 consumer users (rahul@acmecorp.com, rahul@example.com, priya@example.com)");
 
   // carriers
   const carriers = [
@@ -448,9 +462,10 @@ async function main() {
   console.log("  case 2: SHP-CASE002 | Mumbai -> Bangalore | INR 1,25,000 | urgent | carrier: BFX");
   console.log("  case 3: SHP-CASE003 | Kolkata -> Delhi    | INR 8,500    | medium | carrier: SFX");
   console.log("\nlogin:");
-  console.log("  admin: admin@logistix.com / admin123");
-  console.log("  user1: rahul@example.com / user123");
-  console.log("  user2: priya@example.com / user123");
+  console.log("  admin:    admin@logistix.com / admin123");
+  console.log("  consumer: rahul@acmecorp.com / user123");
+  console.log("  consumer: rahul@example.com / user123 (legacy)");
+  console.log("  consumer: priya@example.com / user123");
 }
 
 main()

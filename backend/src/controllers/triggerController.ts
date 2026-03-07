@@ -94,17 +94,22 @@ async function fireWebhook(payload: Record<string, unknown>) {
       body: JSON.stringify(payload),
     });
     const text = await res.text();
-    console.log("[Trigger] Webhook fired:", res.status, text.substring(0, 200));
+    if (!res.ok) {
+      console.warn(`[Trigger] Agent webhook returned ${res.status} - n8n workflow may not be configured at ${webhookUrl}`);
+      return { status: res.status, response: null, error: `Agent webhook not responding (${res.status}). Configure n8n workflow at ${webhookUrl}` };
+    }
     let parsed = null;
     try {
       parsed = JSON.parse(text);
     } catch {
       // not json
     }
+    console.log("[Trigger] Webhook fired:", res.status);
     return { status: res.status, response: parsed || text };
   } catch (err) {
-    console.error("[Trigger] Webhook error:", err);
-    return { status: 0, response: null, error: String(err) };
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Trigger] Agent webhook unreachable: ${msg}`);
+    return { status: 0, response: null, error: `Agent webhook unreachable. Ensure n8n is running and webhook URL is correct.` };
   }
 }
 
@@ -119,11 +124,16 @@ async function fireEmailWebhook(payload: Record<string, unknown>) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "email_notification", ...payload }),
     });
+    if (!res.ok) {
+      console.warn(`[Trigger] Email webhook returned ${res.status} - n8n email workflow may not be configured at ${emailWebhookUrl}`);
+      return { status: res.status, error: `Email webhook not responding (${res.status}). Configure n8n email workflow.` };
+    }
     console.log("[Trigger] Email webhook fired:", res.status);
     return { status: res.status };
   } catch (err) {
-    console.error("[Trigger] Email webhook error:", err);
-    return { status: 0, error: String(err) };
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Trigger] Email webhook unreachable: ${msg}`);
+    return { status: 0, error: `Email webhook unreachable. Ensure n8n is running.` };
   }
 }
 
@@ -198,7 +208,7 @@ export const handleTrigger = async (req: Request, res: Response) => {
       });
     } else {
       shipment = await prisma.shipment.findUnique({
-        where: { id: shipmentId },
+        where: { id: shipmentId as string },
         include: {
           carrier: true,
           warehouse: true,
@@ -663,9 +673,9 @@ export const getTriggerHistory = async (req: Request, res: Response) => {
 
     let shipment;
     if (caseId) {
-      shipment = await prisma.shipment.findUnique({ where: { caseId } });
+      shipment = await prisma.shipment.findUnique({ where: { caseId: caseId as number } });
     } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
+      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
     }
 
     if (!shipment) {

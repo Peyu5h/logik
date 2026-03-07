@@ -19,9 +19,12 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// request logger
+// request logger (suppress noisy polling endpoints)
+const SILENT_PATHS = ["/api/agent/observe", "/api/logs", "/api/shipments", "/api/warehouses", "/api/shipments/stats", "/api/admin/dashboard"];
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  if (!SILENT_PATHS.some((p) => req.path.startsWith(p))) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  }
   next();
 });
 
