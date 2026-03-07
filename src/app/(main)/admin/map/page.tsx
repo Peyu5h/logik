@@ -2,8 +2,7 @@
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useTheme } from "next-themes";
-import mapboxgl from "mapbox-gl";
-import "mapbox-gl/dist/mapbox-gl.css";
+import type { Shipment, RouteWaypoint } from "~/lib/types";
 import {
   Package,
   Truck,
@@ -22,7 +21,8 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useShipments } from "~/hooks/useShipments";
-import type { Shipment, RouteWaypoint } from "~/lib/types";
+
+let mapboxgl: any = null;
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN
 
@@ -207,9 +207,14 @@ export default function LiveMapPage() {
 
     const initMap = async () => {
       if (cancelled || !mapContainerRef.current) return;
-      // @ts-ignore
+
+      if (!mapboxgl) {
+        const mod = await import("mapbox-gl");
+        await import("mapbox-gl/dist/mapbox-gl.css");
+        mapboxgl = mod.default || mod;
+      }
+
       mapboxgl.accessToken = MAPBOX_TOKEN;
-      // @ts-ignore
       const map = new mapboxgl.Map({
         container: mapContainerRef.current,
         style:
@@ -220,7 +225,6 @@ export default function LiveMapPage() {
         zoom: 4.5,
         attributionControl: false,
       });
-      // @ts-ignore
       map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
       map.on("load", () => {

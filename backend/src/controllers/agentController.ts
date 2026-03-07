@@ -879,7 +879,7 @@ export const updateCarrier = async (req: Request, res: Response) => {
       return ApiResponse.error(res, "carrierCode is required", 400);
     }
 
-    const carrier = await prisma.carrier.findUnique({ where: { code: carrierCode } });
+    const carrier = await prisma.carrier.findUnique({ where: { code: carrierCode as string } });
     if (!carrier) {
       return ApiResponse.notFound(res, `Carrier with code ${carrierCode} not found`);
     }
