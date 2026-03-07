@@ -14,17 +14,28 @@ import {
 
 const router = Router();
 
-// link demo shipments (caseId 1,2,3) to a consumer by email
+// link demo shipments (caseId 1,2,3) to a consumer by email or userId
 router.post("/link-demo", async (req: Request, res: Response) => {
   try {
-    const { email } = req.body;
-    if (!email) {
-      return ApiResponse.error(res, "email is required", 400);
+    const { email, userId } = req.body;
+    if (!email && !userId) {
+      return ApiResponse.error(res, "email or userId is required", 400);
     }
 
-    const consumer = await prisma.user.findUnique({ where: { email } });
+    let consumer;
+    if (userId) {
+      try {
+        consumer = await prisma.user.findUnique({ where: { id: userId } });
+      } catch {
+        // invalid objectid format
+      }
+    }
+    if (!consumer && email) {
+      consumer = await prisma.user.findUnique({ where: { email } });
+    }
+
     if (!consumer) {
-      return ApiResponse.error(res, `No user found with email ${email}`, 404);
+      return ApiResponse.error(res, `No user found with ${userId ? `id ${userId}` : `email ${email}`}`, 404);
     }
 
     const result = await prisma.shipment.updateMany({
