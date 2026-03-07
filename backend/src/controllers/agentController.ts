@@ -83,7 +83,7 @@ export const assessRisk = async (req: Request, res: Response) => {
     const { shipmentId } = req.params;
 
     let shipment;
-    const caseIdNum = parseInt(shipmentId);
+    const caseIdNum = parseInt(shipmentId as string);
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({
         where: { caseId: caseIdNum },
@@ -723,7 +723,7 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
 // get shipment by caseid
 export const getShipmentByCaseId = async (req: Request, res: Response) => {
   try {
-    const caseIdNum = parseInt(req.params.caseId);
+    const caseIdNum = parseInt(req.params.caseId as string);
 
     if (isNaN(caseIdNum)) {
       return ApiResponse.error(res, "Invalid caseId", 400);

@@ -196,7 +196,7 @@ export const handleTrigger = async (req: Request, res: Response) => {
 
     // find shipment by caseId (integer) or mongo id
     let shipment;
-    const caseIdNum = parseInt(shipmentId);
+    const caseIdNum = parseInt(shipmentId as string);
     if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
       shipment = await prisma.shipment.findUnique({
         where: { caseId: caseIdNum },
@@ -666,7 +666,7 @@ export const getTriggerHistory = async (req: Request, res: Response) => {
     const { shipmentId } = req.params;
 
     let caseId: number | undefined;
-    const parsed = parseInt(shipmentId);
+    const parsed = parseInt(shipmentId as string);
     if (!isNaN(parsed) && parsed >= 1 && parsed <= 3) {
       caseId = parsed;
     }
