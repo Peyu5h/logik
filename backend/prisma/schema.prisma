@@ -12,47 +12,228 @@ model User {
   email     String   @unique
   password  String
   name      String
-  role      UserRole @default(user)
+  role      UserRole @default(consumer)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tickets         Ticket[] @relation("MerchantTickets")
-  assignedTickets Ticket[] @relation("AssignedTickets")
+  shipments        Shipment[]  @relation("ConsumerShipments")
+  assignedIncidents Incident[] @relation("AssignedIncidents")
 
   @@map("users")
 }
 
-model Ticket {
-  id                String       @id @default(auto()) @map("_id") @db.ObjectId
-  ticketId          String       @unique
-  merchantId        String       @db.ObjectId
-  merchant          User         @relation("MerchantTickets", fields: [merchantId], references: [id])
-  assignedAgentId   String?      @db.ObjectId
-  assignedAgent     User?        @relation("AssignedTickets", fields: [assignedAgentId], references: [id])
-  status            TicketStatus @default(open)
-  priority          Priority     @default(medium)
-  title             String?
-  isEscalated       Boolean      @default(false)
-  escalatedAt       DateTime?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+model Shipment {
+  id              String         @id @default(auto()) @map("_id") @db.ObjectId
+  trackingId      String         @unique
+  consumerId      String         @db.ObjectId
+  consumer        User           @relation("ConsumerShipments", fields: [consumerId], references: [id])
+  status          ShipmentStatus @default(pending)
+  priority        Priority       @default(medium)
+  origin          Location
+  destination     Location
+  currentLocation Location?
+  carrierId       String?        @db.ObjectId
+  carrier         Carrier?       @relation(fields: [carrierId], references: [id])
+  warehouseId     String?        @db.ObjectId
+  warehouse       Warehouse?     @relation(fields: [warehouseId], references: [id])
+  estimatedDelivery DateTime?
+  actualDelivery    DateTime?
+  weight          Float?
+  dimensions      Dimensions?
+  routeHistory    RoutePoint[]
+  slaDeadline     DateTime?
+  slaBreached     Boolean        @default(false)
+  riskScore       Float          @default(0)
+  agentNotes      String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
-  chatHistory ChatHistory?
+  incidents       Incident[]
+  chatHistory     ChatHistory?
 
-  @@index([merchantId])
+  @@index([consumerId])
+  @@index([carrierId])
+  @@index([warehouseId])
+  @@index([status])
+  @@map("shipments")
+}
+
+model Carrier {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  code            String   @unique
+  reliabilityScore Float   @default(80)
+  avgDeliveryTime Float?
+  activeShipments Int      @default(0)
+  totalDeliveries Int      @default(0)
+  onTimeRate      Float    @default(95)
+  failureRate     Float    @default(2)
+  regions         String[]
+  isActive        Boolean  @default(true)
+  lastIncident    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  shipments       Shipment[]
+
+  @@map("carriers")
+}
+
+model Warehouse {
+  id              String          @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  code            String          @unique
+  location        Location
+  capacity        Int             @default(1000)
+  currentLoad     Int             @default(0)
+  utilizationPct  Float           @default(0)
+  throughputRate   Float          @default(100)
+  status          WarehouseStatus @default(operational)
+  congestionLevel CongestionLevel @default(low)
+  avgProcessTime  Float           @default(2)
+  regions         String[]
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  shipments       Shipment[]
+  inventoryItems  InventoryItem[]
+
+  @@map("warehouses")
+}
+
+model InventoryItem {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  sku         String
+  name        String
+  quantity    Int       @default(0)
+  reserved    Int       @default(0)
+  reorderPoint Int     @default(10)
+  warehouseId String    @db.ObjectId
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  lastRestocked DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([sku, warehouseId])
+  @@index([warehouseId])
+  @@map("inventory_items")
+}
+
+model Incident {
+  id              String         @id @default(auto()) @map("_id") @db.ObjectId
+  incidentId      String         @unique
+  shipmentId      String?        @db.ObjectId
+  shipment        Shipment?      @relation(fields: [shipmentId], references: [id])
+  assignedAgentId String?        @db.ObjectId
+  assignedAgent   User?          @relation("AssignedIncidents", fields: [assignedAgentId], references: [id])
+  type            IncidentType
+  severity        Severity       @default(medium)
+  status          IncidentStatus @default(open)
+  title           String
+  description     String?
+  rootCause       String?
+  resolution      String?
+  isEscalated     Boolean        @default(false)
+  escalatedAt     DateTime?
+  agentDecision   AgentDecision?
+  riskScore       Float          @default(0)
+  affectedCount   Int            @default(1)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  chatHistory     ChatHistory?
+
+  @@index([shipmentId])
   @@index([assignedAgentId])
-  @@map("tickets")
+  @@index([status])
+  @@index([type])
+  @@map("incidents")
 }
 
 model ChatHistory {
-  id        String        @id @default(auto()) @map("_id") @db.ObjectId
-  sessionId String        @unique @db.ObjectId
-  ticket    Ticket        @relation(fields: [sessionId], references: [id])
-  messages  ChatMessage[]
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  id         String        @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId  String        @unique @db.ObjectId
+  shipment   Shipment?     @relation(fields: [sessionId], references: [id])
+  incidentId String?       @unique @db.ObjectId
+  incident   Incident?     @relation(fields: [incidentId], references: [id])
+  messages   ChatMessage[]
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
 
   @@map("chat_histories")
+}
+
+model Log {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  logId     String   @unique
+  timestamp DateTime @default(now())
+  eventType String
+  source    String
+  severity  String
+  message   String
+  traceId   String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([eventType])
+  @@index([source])
+  @@map("logs")
+}
+
+model AgentAction {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  actionId      String   @unique
+  actionType    String
+  targetType    String
+  targetId      String
+  description   String
+  reasoning     String?
+  confidence    Float    @default(0)
+  outcome       String?
+  wasCorrect    Boolean?
+  requiredHuman Boolean  @default(false)
+  executedAt    DateTime @default(now())
+  evaluatedAt   DateTime?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([actionType])
+  @@index([executedAt])
+  @@map("agent_actions")
+}
+
+type Location {
+  lat     Float
+  lng     Float
+  address String?
+  city    String?
+  region  String?
+}
+
+type Dimensions {
+  length Float
+  width  Float
+  height Float
+  unit   String @default("cm")
+}
+
+type RoutePoint {
+  lat       Float
+  lng       Float
+  label     String?
+  timestamp DateTime @default(now())
+  status    String?
+}
+
+type AgentDecision {
+  action      String
+  reasoning   String
+  confidence  Float
+  autonomous  Boolean  @default(false)
+  approvedBy  String?
+  executedAt  DateTime?
 }
 
 type ChatMessage {
@@ -68,12 +249,48 @@ type ChatMessage {
   isHuman         Boolean  @default(false)
 }
 
-enum TicketStatus {
+enum ShipmentStatus {
+  pending
+  picked_up
+  in_transit
+  at_warehouse
+  out_for_delivery
+  delivered
+  delayed
+  cancelled
+  returned
+  lost
+}
+
+enum IncidentType {
+  delay
+  damage
+  lost_package
+  wrong_route
+  warehouse_congestion
+  carrier_failure
+  sla_breach
+  inventory_mismatch
+  eta_deviation
+  cascading_delay
+  weather_disruption
+  customs_hold
+}
+
+enum IncidentStatus {
   open
+  investigating
   in_progress
   escalated
   resolved
   closed
+}
+
+enum Severity {
+  low
+  medium
+  high
+  critical
 }
 
 enum Priority {
@@ -83,23 +300,22 @@ enum Priority {
   urgent
 }
 
-enum UserRole {
-  user
-  admin
+enum WarehouseStatus {
+  operational
+  degraded
+  congested
+  offline
+  maintenance
 }
 
-model Log {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  logId     String   @unique
-  timestamp DateTime @default(now())
-  eventType String
-  source    String
-  severity  String
-  message   String
-  traceId   String?
-  createdAt DateTime @default(now())
+enum CongestionLevel {
+  low
+  moderate
+  high
+  critical
+}
 
-  @@index([timestamp])
-  @@index([eventType])
-  @@map("logs")
+enum UserRole {
+  consumer
+  admin
 }

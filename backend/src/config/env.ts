@@ -12,8 +12,19 @@ interface Config {
     origin: string;
   };
   webhook: {
-    ticketUrl: string;
-    resolveTicketUrl: string;
+    agentUrl: string;
+    shipmentUpdateUrl: string;
+    incidentUrl: string;
+    resolveIncidentUrl: string;
+  };
+  pusher: {
+    appId: string;
+    key: string;
+    secret: string;
+    cluster: string;
+  };
+  mapbox: {
+    accessToken: string;
   };
 }
 
@@ -27,8 +38,19 @@ export const config: Config = {
     origin: process.env.CORS_ORIGIN || "*",
   },
   webhook: {
-    ticketUrl: process.env.WEBHOOK_TICKET_URL || "https://abstruse.app.n8n.cloud/webhook/ticket",
-    resolveTicketUrl: process.env.WEBHOOK_RESOLVE_TICKET_URL || "https://abstruse.app.n8n.cloud/webhook/resolve-ticket",
+    agentUrl: process.env.WEBHOOK_AGENT_URL || "https://abstruse.app.n8n.cloud/webhook/agent",
+    shipmentUpdateUrl: process.env.WEBHOOK_SHIPMENT_UPDATE_URL || "https://abstruse.app.n8n.cloud/webhook/shipment-update",
+    incidentUrl: process.env.WEBHOOK_INCIDENT_URL || "https://abstruse.app.n8n.cloud/webhook/incident",
+    resolveIncidentUrl: process.env.WEBHOOK_RESOLVE_INCIDENT_URL || "https://abstruse.app.n8n.cloud/webhook/resolve-incident",
+  },
+  pusher: {
+    appId: process.env.PUSHER_APP_ID || "",
+    key: process.env.PUSHER_KEY || "",
+    secret: process.env.PUSHER_SECRET || "",
+    cluster: process.env.PUSHER_CLUSTER || "ap2",
+  },
+  mapbox: {
+    accessToken: process.env.MAPBOX_ACCESS_TOKEN || "",
   },
 };
 
