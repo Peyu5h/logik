@@ -13,16 +13,264 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: "user" | "admin";
+  role: "consumer" | "admin";
   createdAt: string;
 }
 
+// shipment types
+
+export interface Location {
+  lat: number;
+  lng: number;
+  address?: string;
+  city?: string;
+  region?: string;
+}
+
+export interface Dimensions {
+  length: number;
+  width: number;
+  height: number;
+  unit: string;
+}
+
+export interface RoutePoint {
+  lat: number;
+  lng: number;
+  label?: string;
+  timestamp: string;
+  status?: string;
+}
+
+export type ShipmentStatus =
+  | "pending"
+  | "picked_up"
+  | "in_transit"
+  | "at_warehouse"
+  | "out_for_delivery"
+  | "delivered"
+  | "delayed"
+  | "cancelled"
+  | "returned"
+  | "lost";
+
+export type Priority = "low" | "medium" | "high" | "urgent";
+export type Severity = "low" | "medium" | "high" | "critical";
+
+export interface ShipmentCarrier {
+  _id?: string;
+  id?: string;
+  name: string;
+  code: string;
+  reliabilityScore?: number;
+  reliability_score?: number;
+}
+
+export interface ShipmentWarehouse {
+  _id?: string;
+  id?: string;
+  name: string;
+  code: string;
+  status?: string;
+  congestionLevel?: string;
+  congestion_level?: string;
+}
+
+export interface ShipmentIncidentRef {
+  _id: string;
+  incident_id: string;
+  type: string;
+  severity: Severity;
+  status: string;
+}
+
+export interface Shipment {
+  _id: string;
+  tracking_id: string;
+  consumer_id: string;
+  consumer?: { id: string; name: string; email: string };
+  status: ShipmentStatus;
+  priority: Priority;
+  origin: Location;
+  destination: Location;
+  current_location: Location | null;
+  carrier: ShipmentCarrier | null;
+  warehouse: ShipmentWarehouse | null;
+  estimated_delivery: string | null;
+  actual_delivery: string | null;
+  weight: number | null;
+  dimensions: Dimensions | null;
+  route_history: RoutePoint[];
+  sla_deadline: string | null;
+  sla_breached: boolean;
+  risk_score: number;
+  agent_notes: string | null;
+  incidents: ShipmentIncidentRef[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShipmentStats {
+  total: number;
+  in_transit: number;
+  delayed: number;
+  delivered: number;
+  pending: number;
+  at_warehouse: number;
+  sla_breached: number;
+  high_risk: number;
+  avg_risk_score: number;
+  on_time_rate: number;
+}
+
+// carrier types
+
+export interface Carrier {
+  _id: string;
+  name: string;
+  code: string;
+  reliability_score: number;
+  avg_delivery_time: number | null;
+  active_shipments: number;
+  total_deliveries: number;
+  on_time_rate: number;
+  failure_rate: number;
+  regions: string[];
+  is_active: boolean;
+  last_incident: string | null;
+}
+
+// warehouse types
+
+export type WarehouseStatus = "operational" | "degraded" | "congested" | "offline" | "maintenance";
+export type CongestionLevel = "low" | "moderate" | "high" | "critical";
+
+export interface Warehouse {
+  _id: string;
+  name: string;
+  code: string;
+  location: Location;
+  capacity: number;
+  current_load: number;
+  utilization_pct: number;
+  throughput_rate: number;
+  status: WarehouseStatus;
+  congestion_level: CongestionLevel;
+  avg_process_time: number;
+  regions: string[];
+  is_active: boolean;
+  shipment_count?: number;
+  inventory_count?: number;
+  inventory?: InventoryItem[];
+  active_shipments?: Array<{
+    _id: string;
+    tracking_id: string;
+    status: string;
+    priority: string;
+    risk_score: number;
+    estimated_delivery: string | null;
+  }>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WarehouseStats {
+  total_warehouses: number;
+  total_capacity: number;
+  total_load: number;
+  avg_utilization: number;
+  avg_process_time: number;
+  congested_count: number;
+  degraded_count: number;
+  low_stock_items: number;
+}
+
+export interface InventoryItem {
+  _id: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  reserved: number;
+  available: number;
+  reorder_point: number;
+  low_stock: boolean;
+  last_restocked: string | null;
+  warehouse_id?: string;
+}
+
+// incident types
+
+export type IncidentType =
+  | "delay"
+  | "damage"
+  | "lost_package"
+  | "wrong_route"
+  | "warehouse_congestion"
+  | "carrier_failure"
+  | "sla_breach"
+  | "inventory_mismatch"
+  | "eta_deviation"
+  | "cascading_delay"
+  | "weather_disruption"
+  | "customs_hold";
+
+export type IncidentStatus = "open" | "investigating" | "in_progress" | "escalated" | "resolved" | "closed";
+
+export interface AgentDecision {
+  action: string;
+  reasoning: string;
+  confidence: number;
+  autonomous: boolean;
+  approvedBy?: string;
+  executedAt?: string;
+}
+
+export interface Incident {
+  _id: string;
+  incident_id: string;
+  shipment_id: string | null;
+  shipment: {
+    _id: string;
+    tracking_id: string;
+    status: ShipmentStatus;
+    priority: Priority;
+    origin: Location;
+    destination: Location;
+    current_location: Location | null;
+    risk_score: number;
+    sla_breached: boolean;
+    sla_deadline: string | null;
+    carrier: ShipmentCarrier | null;
+    warehouse: ShipmentWarehouse | null;
+    consumer: { id: string; name: string; email: string } | null;
+  } | null;
+  assigned_agent: { id: string; name: string; email: string } | null;
+  type: IncidentType;
+  severity: Severity;
+  status: IncidentStatus;
+  title: string;
+  description: string | null;
+  root_cause: string | null;
+  resolution: string | null;
+  is_escalated: boolean;
+  escalated_at: string | null;
+  agent_decision: AgentDecision | null;
+  risk_score: number;
+  affected_count: number;
+  chat_history: TicketHistoryItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+// agent types
+
 export type ActionType =
+  | "reroute"
+  | "reprioritize"
   | "escalate"
-  | "update_docs"
-  | "create_github_issue"
-  | "resend_webhook"
-  | "rotate_api_keys"
+  | "reallocate_inventory"
+  | "adjust_schedule"
+  | "notify_consumer"
   | "generic";
 
 export interface ActionCard {
@@ -39,10 +287,12 @@ export interface ActionCard {
 }
 
 export interface AgentReasoning {
-  issue_type?: "migration_issue" | "platform_bug" | "documentation_gap" | "merchant_config" | "unknown";
+  issue_type?: IncidentType | string;
   root_cause?: string;
   assumptions?: string[];
   uncertainties?: string[];
+  risk_factors?: string[];
+  recommended_action?: string;
 }
 
 export interface TicketHistoryItem {
@@ -58,30 +308,8 @@ export interface TicketHistoryItem {
   is_human?: boolean;
 }
 
-export interface MerchantInfo {
-  id: string;
-  name: string;
-  email: string;
-}
-
-export interface Ticket {
-  _id: string;
-  ticket_id: string;
-  merchant_id: string;
-  merchant?: MerchantInfo;
-  assigned_agent_id?: string;
-  status: "open" | "in_progress" | "escalated" | "resolved" | "closed";
-  priority: "low" | "medium" | "high" | "urgent";
-  title?: string;
-  is_escalated?: boolean;
-  escalated_at?: string;
-  chat_history: TicketHistoryItem[];
-  created_at: string;
-  updated_at: string;
-}
-
 export interface AgentResponse {
-  ticket_id: string;
+  shipment_id: string | null;
   agent_message: string | null;
   cards: ActionCard[];
   tools_used?: string[];
@@ -89,77 +317,77 @@ export interface AgentResponse {
   is_escalated?: boolean;
   reasoning?: AgentReasoning;
   confidence_score?: number;
-  complexity_score?: number;
 }
 
-export interface SendMessagePayload {
-  _id: string | null;
-  merchant_id: string;
-  message: {
-    content: string;
-  };
-}
-
-export interface TicketStatusPayload {
-  status: "open" | "in_progress" | "escalated" | "resolved" | "closed";
-}
-
-export interface TicketPriorityPayload {
-  priority: "low" | "medium" | "high" | "urgent";
-}
-
-export interface EscalateTicketPayload {
-  merchant_id: string;
-}
-
-export interface EscalateTicketResponse {
+export interface AgentAction {
   _id: string;
-  is_escalated: boolean;
-  escalated_at: string;
-  status: string;
-  system_message: string;
+  action_id: string;
+  action_type: string;
+  target_type: string;
+  target_id: string;
+  description: string;
+  reasoning: string | null;
+  confidence: number;
+  outcome: string | null;
+  was_correct: boolean | null;
+  required_human: boolean;
+  executed_at: string;
+  evaluated_at: string | null;
+  metadata: Record<string, unknown> | null;
 }
 
-export interface AdminMessagePayload {
-  admin_id: string;
-  content: string;
+// dashboard types
+
+export interface DashboardOverview {
+  total_shipments: number;
+  active_shipments: number;
+  delayed_shipments: number;
+  sla_breached: number;
+  open_incidents: number;
+  critical_incidents: number;
+  escalated_incidents: number;
+  congested_warehouses: number;
 }
 
-export interface AdminMessageResponse {
-  message: string;
-  content: string;
-  timestamp: string;
-  is_human: boolean;
+export interface DashboardStats {
+  overview: DashboardOverview;
+  recent_agent_actions: Array<{
+    action_id: string;
+    action_type: string;
+    description: string;
+    confidence: number;
+    outcome: string | null;
+    required_human: boolean;
+    executed_at: string;
+  }>;
+  top_carriers: Array<{
+    name: string;
+    code: string;
+    reliability_score: number;
+    on_time_rate: number;
+    active_shipments: number;
+  }>;
+  warehouse_status: Array<{
+    name: string;
+    code: string;
+    status: WarehouseStatus;
+    congestion_level: CongestionLevel;
+    utilization_pct: number;
+    throughput_rate: number;
+  }>;
 }
 
-export interface ResolveTicketPayload {
-  admin_id: string;
-}
-
-export interface AnalyticsData {
-  signal_frequency: SignalFrequency[];
-  top_errors: TopError[];
-  unique_merchants: number;
-}
-
-export interface TopError {
-  error_code: string;
-  count: number;
-}
-
-export interface SignalFrequency {
-  date: string;
-  count: number;
-}
+// log types
 
 export interface SystemLog {
   id: string;
   timestamp: string;
   event_type: string;
   source: string;
-  severity: "low" | "medium" | "high" | "critical";
+  severity: Severity;
   message: string;
   trace_id?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface LogsResponse {
@@ -178,32 +406,10 @@ export interface CreateLogPayload {
   severity: string;
   message: string;
   trace_id?: string;
+  metadata?: Record<string, unknown>;
 }
 
-export interface DocsUpdatePayload {
-  operation: "add" | "remove" | "reset";
-  section?: string;
-  content?: string;
-}
-
-export interface DocsUpdateResponse {
-  message: string;
-  action_taken: string;
-  operation: string;
-}
-
-export interface GithubIssuePayload {
-  title: string;
-  description: string;
-  issue_type?: string;
-  severity?: string;
-  merchant_id?: string;
-  ticket_id?: string;
-  error_code?: string;
-  reproduction_steps?: string;
-  expected_behavior?: string;
-  actual_behavior?: string;
-}
+// auth types
 
 export interface SignInRequest {
   email: string;
@@ -214,4 +420,13 @@ export interface SignUpRequest {
   name: string;
   email: string;
   password: string;
+}
+
+// send message payload
+export interface SendMessagePayload {
+  shipment_id: string | null;
+  consumer_id: string;
+  message: {
+    content: string;
+  };
 }
