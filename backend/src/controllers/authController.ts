@@ -28,7 +28,7 @@ export const signUp = async (req: Request, res: Response) => {
         name,
         email: email.toLowerCase(),
         password: hashedPassword,
-        role: "user",
+        role: "consumer",
       },
       select: {
         id: true,

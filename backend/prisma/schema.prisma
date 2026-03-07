@@ -24,6 +24,7 @@ model User {
 
 model Shipment {
   id              String         @id @default(auto()) @map("_id") @db.ObjectId
+  caseId          Int            @unique
   trackingId      String         @unique
   consumerId      String         @db.ObjectId
   consumer        User           @relation("ConsumerShipments", fields: [consumerId], references: [id])
@@ -36,15 +37,26 @@ model Shipment {
   carrier         Carrier?       @relation(fields: [carrierId], references: [id])
   warehouseId     String?        @db.ObjectId
   warehouse       Warehouse?     @relation(fields: [warehouseId], references: [id])
+  initialEta      DateTime?
+  finalEta        DateTime?
   estimatedDelivery DateTime?
   actualDelivery    DateTime?
+  delay           Int            @default(0)
+  value           Float          @default(0)
   weight          Float?
   dimensions      Dimensions?
   routeHistory    RoutePoint[]
   slaDeadline     DateTime?
   slaBreached     Boolean        @default(false)
+  rerouted        Boolean        @default(false)
+  escalated       Boolean        @default(false)
   riskScore       Float          @default(0)
   agentNotes      String?
+  previousCarrierId String?
+  nextWarehouseId   String?
+  deliveryAddress   String?
+  recipientName     String?
+  recipientPhone    String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 

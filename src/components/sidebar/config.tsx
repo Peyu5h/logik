@@ -4,6 +4,7 @@ import {
   ScrollText,
   Map,
   Package,
+  MessageCircle,
 } from "lucide-react";
 
 interface NavItem {
@@ -58,6 +59,13 @@ export const NavItems = (pathname: string, isAdmin?: boolean): NavItem[] => {
       href: "/track",
       icon: <Package size={20} />,
       active: isNavItemActive("/track"),
+      position: "top",
+    },
+    {
+      name: "Support",
+      href: "/support",
+      icon: <MessageCircle size={20} />,
+      active: isNavItemActive("/support"),
       position: "top",
     },
   ];

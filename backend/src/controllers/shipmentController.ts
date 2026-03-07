@@ -81,6 +81,10 @@ export const createShipment = async (req: Request, res: Response) => {
       carrier_id,
       warehouse_id,
       sla_hours,
+      value,
+      delivery_address,
+      recipient_name,
+      recipient_phone,
     } = req.body;
 
     if (!consumer_id || !origin || !destination) {
@@ -89,9 +93,18 @@ export const createShipment = async (req: Request, res: Response) => {
 
     const trackingId = generateTrackingId();
     const slaDeadline = sla_hours ? new Date(Date.now() + sla_hours * 60 * 60 * 1000) : null;
+    const estimatedDelivery = sla_hours ? new Date(Date.now() + sla_hours * 60 * 60 * 1000) : null;
+
+    // auto-increment caseId
+    const lastShipment = await prisma.shipment.findFirst({
+      orderBy: { caseId: "desc" },
+      select: { caseId: true },
+    });
+    const nextCaseId = (lastShipment?.caseId || 0) + 1;
 
     const shipment = await prisma.shipment.create({
       data: {
+        caseId: nextCaseId,
         trackingId,
         consumerId: consumer_id,
         status: "pending",
@@ -100,11 +113,19 @@ export const createShipment = async (req: Request, res: Response) => {
         destination,
         carrierId: carrier_id || null,
         warehouseId: warehouse_id || null,
+        initialEta: estimatedDelivery,
+        finalEta: estimatedDelivery,
+        estimatedDelivery,
+        delay: 0,
+        value: value || 0,
         weight: weight || null,
         dimensions: dimensions || null,
         routeHistory: [],
         slaDeadline,
         riskScore: 0,
+        deliveryAddress: delivery_address || null,
+        recipientName: recipient_name || null,
+        recipientPhone: recipient_phone || null,
       },
       include: {
         carrier: { select: { id: true, name: true, code: true } },
@@ -444,6 +465,7 @@ export const sendAgentMessage = async (req: Request, res: Response) => {
 function normalize(shipment: any) {
   return {
     _id: shipment.id,
+    case_id: shipment.caseId,
     tracking_id: shipment.trackingId,
     consumer_id: shipment.consumerId,
     consumer: shipment.consumer || undefined,
@@ -454,15 +476,26 @@ function normalize(shipment: any) {
     current_location: shipment.currentLocation || null,
     carrier: shipment.carrier || null,
     warehouse: shipment.warehouse || null,
+    initial_eta: shipment.initialEta || null,
+    final_eta: shipment.finalEta || null,
     estimated_delivery: shipment.estimatedDelivery,
     actual_delivery: shipment.actualDelivery || null,
+    delay: shipment.delay || 0,
+    value: shipment.value || 0,
     weight: shipment.weight,
     dimensions: shipment.dimensions || null,
     route_history: shipment.routeHistory || [],
     sla_deadline: shipment.slaDeadline,
     sla_breached: shipment.slaBreached,
+    rerouted: shipment.rerouted || false,
+    escalated: shipment.escalated || false,
     risk_score: shipment.riskScore,
     agent_notes: shipment.agentNotes || null,
+    delivery_address: shipment.deliveryAddress || null,
+    recipient_name: shipment.recipientName || null,
+    recipient_phone: shipment.recipientPhone || null,
+    previous_carrier_id: shipment.previousCarrierId || null,
+    next_warehouse_id: shipment.nextWarehouseId || null,
     incidents: shipment.incidents?.map((inc: any) => ({
       _id: inc.id,
       incident_id: inc.incidentId,

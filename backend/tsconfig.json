@@ -9,6 +9,7 @@
     "allowJs": true,
     "checkJs": false,
     "sourceMap": true,
+    "noEmitOnError":false,
     "removeComments": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

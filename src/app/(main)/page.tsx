@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Package,
   Clock,
@@ -67,24 +67,40 @@ function formatDate(dateStr: string): string {
 
 function ShipmentRow({ shipment }: { shipment: Shipment }) {
   const sc = statusConfig[shipment.status] || statusConfig.pending;
+  const delayHrs = shipment.delay ? Math.round(shipment.delay / 60 * 10) / 10 : 0;
 
   return (
     <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3 last:border-0 hover:bg-muted/30 transition-colors">
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", sc.className)}>
             {sc.label}
           </span>
           <span className="text-xs font-medium capitalize text-muted-foreground">
             {shipment.priority}
           </span>
+          {shipment.case_id && (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">
+              #{shipment.case_id}
+            </span>
+          )}
           {shipment.sla_breached && (
             <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-500">
-              SLA
+              SLA BREACH
+            </span>
+          )}
+          {shipment.rerouted && (
+            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
+              Rerouted
+            </span>
+          )}
+          {shipment.escalated && (
+            <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+              Escalated
             </span>
           )}
           {shipment.risk_score > 40 && (
-            <span className="text-[10px] text-orange-500">Risk: {shipment.risk_score}</span>
+            <span className="text-[10px] text-orange-500">Risk: {shipment.risk_score}%</span>
           )}
         </div>
         <div className="mt-1 flex items-center gap-1.5 text-sm">
@@ -96,7 +112,7 @@ function ShipmentRow({ shipment }: { shipment: Shipment }) {
             {shipment.destination.city || "Destination"}
           </span>
         </div>
-        <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
           {shipment.carrier && (
             <span className="flex items-center gap-1">
               <Truck className="h-3 w-3" />
@@ -104,6 +120,12 @@ function ShipmentRow({ shipment }: { shipment: Shipment }) {
             </span>
           )}
           {shipment.weight && <span>{shipment.weight} kg</span>}
+          {delayHrs > 0 && (
+            <span className="text-red-500 font-medium">+{delayHrs}h delay</span>
+          )}
+          {shipment.value > 0 && (
+            <span>INR {shipment.value.toLocaleString("en-IN")}</span>
+          )}
         </div>
         {shipment.agent_notes && (
           <p className="mt-1 text-[10px] text-muted-foreground/70 line-clamp-1">
@@ -116,9 +138,14 @@ function ShipmentRow({ shipment }: { shipment: Shipment }) {
         {shipment.estimated_delivery && (
           <p className="mt-0.5 text-[10px]">
             <span className="text-muted-foreground">ETA </span>
-            <span className={cn("font-medium", shipment.sla_breached ? "text-red-500" : "text-foreground")}>
+            <span className={cn("font-medium", shipment.sla_breached ? "text-red-500" : shipment.delay > 0 ? "text-amber-500" : "text-foreground")}>
               {formatDate(shipment.estimated_delivery)}
             </span>
+          </p>
+        )}
+        {shipment.initial_eta && shipment.delay > 0 && (
+          <p className="mt-0.5 text-[10px] text-muted-foreground/60 line-through">
+            was {formatDate(shipment.initial_eta)}
           </p>
         )}
         <p className="mt-0.5 text-[10px] text-muted-foreground/60">
@@ -146,6 +173,14 @@ const CITIES = [
 export default function ConsumerDashboard() {
   const { user } = useUser();
   const { data, isLoading, refetch } = useMyShipments();
+
+  // realtime polling every 2 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetch();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [refetch]);
   const createShipment = useCreateShipment();
 
   const [showCreate, setShowCreate] = useState(false);

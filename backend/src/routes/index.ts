@@ -4,6 +4,8 @@ import adminRoutes from "./adminRoutes.js";
 import logsRoutes from "./logsRoutes.js";
 import shipmentRoutes from "./shipmentRoutes.js";
 import warehouseRoutes from "./warehouseRoutes.js";
+import triggerRoutes from "./triggerRoutes.js";
+import agentRoutes from "./agentRoutes.js";
 
 const router = Router();
 
@@ -20,5 +22,7 @@ router.use("/admin", adminRoutes);
 router.use("/logs", logsRoutes);
 router.use("/shipments", shipmentRoutes);
 router.use("/warehouses", warehouseRoutes);
+router.use("/triggers", triggerRoutes);
+router.use("/agent", agentRoutes);
 
 export default router;

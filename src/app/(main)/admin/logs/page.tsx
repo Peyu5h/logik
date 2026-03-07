@@ -3,16 +3,18 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import {
   ScrollText,
-  Play,
-  AlertTriangle,
   Clock,
   Zap,
   Loader2,
   Truck,
   Package,
-  MapPin,
-  ShieldAlert,
   RefreshCw,
+  CloudRain,
+  FileWarning,
+  AlertOctagon,
+  CheckCircle2,
+  ChevronRight,
+  AlertTriangle,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
@@ -23,9 +25,29 @@ import useUser from "~/hooks/useUser";
 import type { SystemLog } from "~/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
-const WEBHOOK_URL =
-  process.env.NEXT_PUBLIC_WEBHOOK_URL ||
-  "https://abstruse.app.n8n.cloud/webhook/system-signal";
+
+interface ShipmentState {
+  _id: string;
+  caseId: number;
+  trackingId: string;
+  status: string;
+  priority: string;
+  delay: number;
+  value: number;
+  riskScore: number;
+  slaBreached: boolean;
+  rerouted: boolean;
+  escalated: boolean;
+  initialEta: string | null;
+  finalEta: string | null;
+  slaDeadline: string | null;
+  carrier: { code: string; name: string; reliabilityScore: number } | null;
+  warehouse: { code: string; name: string; status: string } | null;
+  origin: { city?: string } | null;
+  destination: { city?: string } | null;
+  agentNotes: string | null;
+  updatedAt: string;
+}
 
 interface TriggerCard {
   id: string;
@@ -33,156 +55,113 @@ interface TriggerCard {
   description: string;
   icon: React.ReactNode;
   severity: "low" | "medium" | "high" | "critical";
-  eventType: string;
-  errorCode: string;
-  serviceSource: string;
-  payload: Record<string, unknown>;
+  issue: string;
 }
 
 const TRIGGER_CARDS: TriggerCard[] = [
   {
-    id: "delay-30min",
-    title: "Add 30min Delay",
-    description: "Carrier reports 30 minute delay on shipment",
+    id: "late-pickup",
+    title: "Late Pickup (+2hrs)",
+    description: "Carrier hasn't picked up. Adds 2hr delay. Auto-reassigns carrier if pending.",
     icon: <Clock className="h-4 w-4" />,
     severity: "medium",
-    eventType: "shipment_delay",
-    errorCode: "DELAY_30",
-    serviceSource: "carrier_gateway",
-    payload: {
-      description: "Carrier reported 30 minute delay due to traffic congestion.",
-      delay_minutes: 30,
-      reason: "traffic_congestion",
-    },
+    issue: "late_pickup",
   },
   {
-    id: "wrong-address",
-    title: "Wrong Address Delivery",
-    description: "Shipment delivered to incorrect address",
-    icon: <MapPin className="h-4 w-4" />,
-    severity: "high",
-    eventType: "wrong_delivery",
-    errorCode: "DEL_WRONG_ADDR",
-    serviceSource: "delivery_service",
-    payload: {
-      description: "Package delivered to wrong address. Consumer reported mismatch.",
-      impact: "consumer_complaint",
-      requires_redelivery: true,
-    },
-  },
-  {
-    id: "pickup-not-initiated",
-    title: "Pickup Not Initiated",
-    description: "Carrier failed to initiate pickup within SLA window",
-    icon: <Package className="h-4 w-4" />,
-    severity: "high",
-    eventType: "pickup_failure",
-    errorCode: "PICKUP_MISS",
-    serviceSource: "carrier_gateway",
-    payload: {
-      description: "Carrier failed to initiate pickup. SLA window exceeded by 2 hours.",
-      sla_exceeded_hours: 2,
-      carrier_response: "no_response",
-    },
-  },
-  {
-    id: "carrier-degraded",
-    title: "Carrier Degraded",
-    description: "Carrier reliability dropped below threshold",
+    id: "carrier-breakdown",
+    title: "Carrier Breakdown",
+    description: "Vehicle breakdown. Adds 4hr delay. Emergency carrier reassignment.",
     icon: <Truck className="h-4 w-4" />,
-    severity: "high",
-    eventType: "carrier_degradation",
-    errorCode: "CARRIER_DEG",
-    serviceSource: "monitoring_service",
-    payload: {
-      description: "Carrier on-time rate dropped to 62%. Multiple delays in last 24h.",
-      on_time_rate: 62,
-      recent_failures: 5,
-    },
+    severity: "critical",
+    issue: "carrier_breakdown",
   },
   {
     id: "warehouse-congestion",
     title: "Warehouse Congestion",
-    description: "Warehouse throughput degraded, utilization above 90%",
+    description: "Hub congestion. Adds 3hr delay. Processing time elevated.",
+    icon: <Package className="h-4 w-4" />,
+    severity: "high",
+    issue: "warehouse_congestion",
+  },
+  {
+    id: "weather-disruption",
+    title: "Weather Disruption",
+    description: "Severe weather on route. Adds 5hr delay.",
+    icon: <CloudRain className="h-4 w-4" />,
+    severity: "high",
+    issue: "weather_disruption",
+  },
+  {
+    id: "customs-hold",
+    title: "Customs Hold",
+    description: "Shipment held at customs. Adds 6hr delay.",
+    icon: <FileWarning className="h-4 w-4" />,
+    severity: "high",
+    issue: "customs_hold",
+  },
+  {
+    id: "inaccurate-eta",
+    title: "Inaccurate ETA",
+    description: "ETA calculation off. Adds 1.5hr correction delay.",
     icon: <AlertTriangle className="h-4 w-4" />,
     severity: "medium",
-    eventType: "warehouse_congestion",
-    errorCode: "WH_CONGESTED",
-    serviceSource: "warehouse_monitor",
-    payload: {
-      description: "Warehouse utilization at 94%. Processing delays expected.",
-      utilization_pct: 94,
-      estimated_delay_hours: 3,
-    },
+    issue: "inaccurate_ETA",
   },
   {
-    id: "sla-breach-imminent",
-    title: "SLA Breach Imminent",
-    description: "Shipment will breach SLA deadline within 2 hours",
-    icon: <ShieldAlert className="h-4 w-4" />,
+    id: "sla-breach",
+    title: "SLA Breach",
+    description: "Force SLA breach. Auto-escalates and sends email notification.",
+    icon: <AlertOctagon className="h-4 w-4" />,
     severity: "critical",
-    eventType: "sla_breach_warning",
-    errorCode: "SLA_IMMINENT",
-    serviceSource: "sla_monitor",
-    payload: {
-      description: "SLA breach imminent. Estimated delivery exceeds deadline by 4 hours.",
-      hours_until_breach: 2,
-      estimated_overshoot_hours: 4,
-    },
+    issue: "SLA_BREACH",
   },
   {
-    id: "route-deviation",
-    title: "Route Deviation",
-    description: "Carrier deviated from planned route significantly",
-    icon: <Zap className="h-4 w-4" />,
-    severity: "medium",
-    eventType: "route_deviation",
-    errorCode: "ROUTE_DEV",
-    serviceSource: "tracking_service",
-    payload: {
-      description: "Carrier deviated 45km from planned route. ETA recalculation needed.",
-      deviation_km: 45,
-      eta_impact_minutes: 90,
-    },
-  },
-  {
-    id: "cascading-delay",
-    title: "Cascading Delay",
-    description: "Delay on one shipment affecting 3+ downstream shipments",
-    icon: <AlertTriangle className="h-4 w-4" />,
-    severity: "critical",
-    eventType: "cascading_delay",
-    errorCode: "CASCADE_DELAY",
-    serviceSource: "ops_engine",
-    payload: {
-      description: "Hub delay causing cascading impact on 5 downstream shipments.",
-      affected_shipments: 5,
-      hub_location: "Mumbai Central",
-      estimated_recovery_hours: 6,
-    },
+    id: "resolve",
+    title: "Resolve All Issues",
+    description: "Clear all delays, reset risk, resolve incidents. Restore initial ETA.",
+    icon: <CheckCircle2 className="h-4 w-4" />,
+    severity: "low",
+    issue: "resolve",
   },
 ];
 
 const SEVERITY_COLORS: Record<string, string> = {
-  low: "text-muted-foreground",
+  low: "text-emerald-500",
   medium: "text-amber-500",
   high: "text-orange-500",
   critical: "text-red-500",
 };
 
-function generateId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
+const STATUS_COLORS: Record<string, string> = {
+  pending: "bg-yellow-500",
+  picked_up: "bg-blue-500",
+  in_transit: "bg-blue-500",
+  at_warehouse: "bg-purple-500",
+  out_for_delivery: "bg-cyan-500",
+  delivered: "bg-emerald-500",
+  delayed: "bg-red-500",
+  cancelled: "bg-zinc-500",
+};
 
-function formatTimestamp(timestamp: string) {
-  return new Date(timestamp).toLocaleString("en-IN", {
+function formatTimestamp(ts: string) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
+    hour12: true,
   });
+}
+
+function formatDelayHrs(minutes: number): string {
+  if (minutes === 0) return "0";
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hrs === 0) return `${mins}m`;
+  if (mins === 0) return `${hrs}h`;
+  return `${hrs}h ${mins}m`;
 }
 
 export default function LogsPage() {
@@ -197,140 +176,202 @@ export default function LogsPage() {
   const createLog = useCreateLog();
   const clearLogs = useClearLogs();
 
+  const { user } = useUser();
+
   const [localLogs, setLocalLogs] = useState<SystemLog[]>([]);
   const [loadingTriggers, setLoadingTriggers] = useState<Record<string, boolean>>({});
   const [newLogIds, setNewLogIds] = useState<Set<string>>(new Set());
   const loaderRef = useRef<HTMLDivElement>(null);
-  const { user } = useUser();
+
+  // shipment selector state
+  const [demoShipments, setDemoShipments] = useState<ShipmentState[]>([]);
+  const [selectedCaseId, setSelectedCaseId] = useState<number>(1);
+  const [isLoadingShipments, setIsLoadingShipments] = useState(false);
 
   const allRemoteLogs: SystemLog[] =
-    logsData?.pages.flatMap((page) => page.logs) ?? [];
+    logsData?.pages?.flatMap((page) => page.logs) ?? [];
 
-  const mergedLogs = [...localLogs, ...allRemoteLogs].reduce<SystemLog[]>(
-    (acc, log) => {
-      if (!acc.find((l) => l.id === log.id)) acc.push(log);
-      return acc;
-    },
-    []
-  );
+  const mergedLogs = [...localLogs, ...allRemoteLogs]
+    .sort(
+      (a, b) =>
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    )
+    .filter(
+      (log, idx, arr) => arr.findIndex((l) => l.id === log.id) === idx
+    );
 
-  mergedLogs.sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
-
-  // infinite scroll
+  // infinite scroll observer
   useEffect(() => {
+    if (!loaderRef.current) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+        if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
           fetchNextPage();
         }
       },
-      { threshold: 0.1 }
+      { threshold: 0.5 }
     );
-    if (loaderRef.current) observer.observe(loaderRef.current);
+    observer.observe(loaderRef.current);
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const addLocalLog = useCallback((log: SystemLog) => {
-    setLocalLogs((prev) => [log, ...prev].slice(0, 50));
-    setNewLogIds(new Set([log.id]));
-    setTimeout(() => setNewLogIds(new Set()), 2000);
+  // fetch demo shipments
+  const fetchShipments = useCallback(async () => {
+    setIsLoadingShipments(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agent/observe`);
+      if (res.ok) {
+        const data = await res.json();
+        const shipments = (data.data?.shipments || []) as ShipmentState[];
+        setDemoShipments(shipments);
+      }
+    } catch {
+      // fallback: try individual case ids
+      const results: ShipmentState[] = [];
+      for (const cid of [1, 2, 3]) {
+        try {
+          const r = await fetch(`${API_BASE_URL}/api/agent/shipment/${cid}`);
+          if (r.ok) {
+            const d = await r.json();
+            if (d.data) results.push(d.data);
+          }
+        } catch {
+          // skip
+        }
+      }
+      setDemoShipments(results);
+    } finally {
+      setIsLoadingShipments(false);
+    }
   }, []);
 
-  // trigger a signal
-  const triggerSignal = useCallback(
-    async (card: TriggerCard) => {
-      if (!user) {
-        toast.error("Sign in to trigger signals");
-        return;
-      }
+  // initial load
+  useEffect(() => {
+    fetchShipments();
+  }, [fetchShipments]);
 
-      setLoadingTriggers((prev) => ({ ...prev, [card.id]: true }));
+  // poll shipments every 2 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchShipments();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [fetchShipments]);
 
-      const timestamp = new Date().toISOString();
+  // poll logs every 3 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetch();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [refetch]);
 
-      const logEntry: SystemLog = {
-        id: generateId("log"),
-        timestamp,
-        event_type: card.eventType.toUpperCase(),
-        source: card.serviceSource,
-        severity: card.severity,
-        message: `${card.errorCode}: ${(card.payload as { description?: string }).description || card.description}`,
-        trace_id: user.id,
-      };
+  const selectedShipment = demoShipments.find(
+    (s) => s.caseId === selectedCaseId
+  );
 
-      addLocalLog(logEntry);
-
-      // persist log
-      createLog.mutate({
-        id: logEntry.id,
-        timestamp,
-        event_type: logEntry.event_type,
-        source: logEntry.source,
-        severity: logEntry.severity,
-        message: logEntry.message,
-        trace_id: user.id,
+  const addLocalLog = (log: SystemLog) => {
+    setLocalLogs((prev) => [log, ...prev]);
+    setNewLogIds((prev) => new Set([...prev, log.id]));
+    setTimeout(() => {
+      setNewLogIds((prev) => {
+        const next = new Set(prev);
+        next.delete(log.id);
+        return next;
       });
+    }, 3000);
+  };
 
-      // send webhook
-      const webhookPayload = {
-        event_type: card.eventType,
-        severity: card.severity,
-        timestamp,
-        merchant_id: user.id,
-        email: user.email,
-        service_source: card.serviceSource,
-        error_code: card.errorCode,
-        payload: card.payload,
-      };
+  // fires a trigger against the selected shipment
+  const triggerSignal = async (card: TriggerCard) => {
+    if (!selectedShipment) {
+      toast.error("Select a shipment first");
+      return;
+    }
 
-      try {
-        const response = await fetch(WEBHOOK_URL, {
+    setLoadingTriggers((prev) => ({ ...prev, [card.id]: true }));
+
+    const timestamp = new Date().toISOString();
+    const logEntry: SystemLog = {
+      id: `local-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp,
+      event_type: `trigger_${card.issue}`,
+      source: "admin_panel",
+      severity: card.severity,
+      message: `Case ${selectedCaseId}: Triggering ${card.title}...`,
+    };
+    addLocalLog(logEntry);
+
+    try {
+      // fire the trigger endpoint
+      const response = await fetch(
+        `${API_BASE_URL}/api/triggers/${selectedCaseId}/${card.issue}`,
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(webhookPayload),
-        });
-
-        if (response.ok) {
-          toast.success(`Sent: ${card.title}`, {
-            description: `${card.eventType} signal dispatched`,
-          });
-
-          const ackLog: SystemLog = {
-            id: generateId("log"),
-            timestamp: new Date().toISOString(),
-            event_type: "WEBHOOK_SENT",
-            source: "testing-studio",
-            severity: "low",
-            message: `Signal dispatched: ${card.eventType}`,
-            trace_id: user.id,
-          };
-          addLocalLog(ackLog);
-          createLog.mutate({
-            id: ackLog.id,
-            timestamp: ackLog.timestamp,
-            event_type: ackLog.event_type,
-            source: ackLog.source,
-            severity: ackLog.severity,
-            message: ackLog.message,
-            trace_id: user.id,
-          });
-        } else {
-          toast.error(`Failed: ${card.title}`, {
-            description: `Status ${response.status}`,
-          });
         }
-      } catch (error) {
-        toast.error(`Error: ${card.title}`, {
-          description: error instanceof Error ? error.message : "Network error",
+      );
+
+      const result = await response.json();
+
+      if (response.ok) {
+        const d = result.data || result;
+        const changes = d.changes || {};
+        const actions = d.actions || {};
+
+        // log the result
+        const resultLog: SystemLog = {
+          id: `local-result-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          event_type: `trigger_${card.issue}_result`,
+          source: "trigger_engine",
+          severity: card.severity,
+          message: `Case ${selectedCaseId}: ${card.title} processed. Delay: ${changes.delay?.total || 0}min, Risk: ${changes.riskScore?.new || 0}%. ${actions.carrierReassigned ? "Carrier reassigned. " : ""}${actions.emailTriggered ? "Email sent. " : ""}${actions.warehouseRerouted ? "Warehouse rerouted. " : ""}`,
+        };
+        addLocalLog(resultLog);
+
+        // persist log to backend
+        createLog.mutate({
+          id: resultLog.id,
+          timestamp: resultLog.timestamp,
+          event_type: resultLog.event_type,
+          source: resultLog.source,
+          severity: resultLog.severity,
+          message: resultLog.message,
         });
-      } finally {
-        setLoadingTriggers((prev) => ({ ...prev, [card.id]: false }));
+
+        toast.success(`${card.title} triggered for Case ${selectedCaseId}`);
+
+        // refresh shipments immediately
+        fetchShipments();
+      } else {
+        toast.error(result.error?.[0]?.message || "Trigger failed");
+
+        const errorLog: SystemLog = {
+          id: `local-err-${Date.now().toString(36)}`,
+          timestamp: new Date().toISOString(),
+          event_type: "trigger_error",
+          source: "admin_panel",
+          severity: "high",
+          message: `Case ${selectedCaseId}: ${card.title} FAILED - ${result.error?.[0]?.message || "Unknown error"}`,
+        };
+        addLocalLog(errorLog);
       }
-    },
-    [user, addLocalLog, createLog]
-  );
+    } catch (err) {
+      toast.error("Failed to connect to server");
+      const errorLog: SystemLog = {
+        id: `local-err-${Date.now().toString(36)}`,
+        timestamp: new Date().toISOString(),
+        event_type: "trigger_error",
+        source: "admin_panel",
+        severity: "critical",
+        message: `Case ${selectedCaseId}: ${card.title} connection error`,
+      };
+      addLocalLog(errorLog);
+    } finally {
+      setLoadingTriggers((prev) => ({ ...prev, [card.id]: false }));
+    }
+  };
 
   const handleClearLogs = () => {
     setLocalLogs([]);
@@ -339,18 +380,164 @@ export default function LogsPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* logs panel */}
+      {/* left: shipment selector + state */}
+      <div className="hidden w-72 flex-col border-r lg:flex overflow-hidden">
+        <div className="shrink-0 border-b px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Package className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">Demo Shipments</h2>
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Select a case to trigger events
+          </p>
+        </div>
+
+        <div className="shrink-0 border-b">
+          {[1, 2, 3].map((cid) => {
+            const s = demoShipments.find((sh) => sh.caseId === cid);
+            const isActive = selectedCaseId === cid;
+            return (
+              <button
+                key={cid}
+                onClick={() => setSelectedCaseId(cid)}
+                className={cn(
+                  "flex w-full items-start gap-3 border-b last:border-b-0 px-4 py-3 text-left transition-colors",
+                  isActive
+                    ? "bg-primary/5"
+                    : "hover:bg-muted/50"
+                )}
+              >
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-bold">
+                  {cid}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium truncate">
+                      {s?.trackingId || `SHP-CASE00${cid}`}
+                    </span>
+                    {s && (
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full shrink-0",
+                          STATUS_COLORS[s.status] || "bg-zinc-400"
+                        )}
+                      />
+                    )}
+                  </div>
+                  {s ? (
+                    <>
+                      <p className="text-muted-foreground text-[11px] truncate mt-0.5">
+                        {s.origin?.city || "?"} → {s.destination?.city || "?"}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <span className="text-[10px] capitalize text-muted-foreground">
+                          {s.status.replace(/_/g, " ")}
+                        </span>
+                        {s.delay > 0 && (
+                          <span className="text-[10px] text-red-500 font-medium">
+                            +{formatDelayHrs(s.delay)}
+                          </span>
+                        )}
+                        {s.slaBreached && (
+                          <span className="text-[10px] text-red-600 font-semibold">
+                            SLA!
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground text-[10px] mt-0.5">
+                      Loading...
+                    </p>
+                  )}
+                </div>
+                <ChevronRight
+                  className={cn(
+                    "h-4 w-4 shrink-0 mt-1",
+                    isActive ? "text-primary" : "text-muted-foreground/30"
+                  )}
+                />
+              </button>
+            );
+          })}
+        </div>
+
+        {/* selected shipment detail */}
+        <ScrollArea className="flex-1">
+          {selectedShipment ? (
+            <div className="p-4 space-y-3">
+              <h3 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">
+                Case {selectedShipment.caseId} State
+              </h3>
+
+              <div className="space-y-2 text-xs">
+                <Row label="Status" value={selectedShipment.status.replace(/_/g, " ")}
+                  color={selectedShipment.status === "delayed" ? "text-red-500" : selectedShipment.status === "delivered" ? "text-emerald-500" : "text-foreground"} />
+                <Row label="Priority" value={selectedShipment.priority}
+                  color={selectedShipment.priority === "urgent" ? "text-red-500" : selectedShipment.priority === "high" ? "text-orange-500" : "text-foreground"} />
+                <Row label="Delay" value={formatDelayHrs(selectedShipment.delay)}
+                  color={selectedShipment.delay > 0 ? "text-red-500" : "text-foreground"} />
+                <Row label="Risk" value={`${selectedShipment.riskScore}%`}
+                  color={selectedShipment.riskScore >= 70 ? "text-red-500" : selectedShipment.riskScore >= 40 ? "text-orange-500" : "text-foreground"} />
+                <Row label="Value" value={`INR ${selectedShipment.value?.toLocaleString("en-IN") || "0"}`} />
+                <Row label="Carrier" value={selectedShipment.carrier?.code || "unassigned"} />
+                <Row label="Warehouse" value={selectedShipment.warehouse?.code || "none"} />
+                <Row label="SLA Breach" value={selectedShipment.slaBreached ? "YES" : "No"}
+                  color={selectedShipment.slaBreached ? "text-red-600 font-semibold" : "text-emerald-500"} />
+                <Row label="Rerouted" value={selectedShipment.rerouted ? "Yes" : "No"}
+                  color={selectedShipment.rerouted ? "text-amber-500" : "text-foreground"} />
+                <Row label="Escalated" value={selectedShipment.escalated ? "Yes" : "No"}
+                  color={selectedShipment.escalated ? "text-red-500" : "text-foreground"} />
+
+                {selectedShipment.initialEta && (
+                  <Row label="Initial ETA" value={new Date(selectedShipment.initialEta).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} />
+                )}
+                {selectedShipment.finalEta && (
+                  <Row label="Final ETA" value={new Date(selectedShipment.finalEta).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    color={selectedShipment.delay > 0 ? "text-red-500" : "text-foreground"} />
+                )}
+                {selectedShipment.slaDeadline && (
+                  <Row label="SLA Deadline" value={new Date(selectedShipment.slaDeadline).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} />
+                )}
+              </div>
+
+              {selectedShipment.agentNotes && (
+                <div className="mt-3 rounded-md bg-muted/50 p-2">
+                  <span className="text-[10px] text-muted-foreground font-medium uppercase">Agent Notes</span>
+                  <p className="text-[11px] text-foreground mt-0.5">{selectedShipment.agentNotes}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-10">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+        </ScrollArea>
+      </div>
+
+      {/* center: logs panel */}
       <div className="flex flex-1 flex-col overflow-hidden">
         <div className="shrink-0 flex items-center justify-between border-b px-6 py-4">
           <div>
             <h1 className="text-lg font-semibold">System Logs</h1>
             <p className="text-muted-foreground text-sm">
-              Event logs and signal triggers for the agent
+              Event logs and trigger testing for Case {selectedCaseId}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-1.5">
-              <RefreshCw className={cn("h-3.5 w-3.5", isLoadingLogs && "animate-spin")} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetch()}
+              className="gap-1.5"
+            >
+              <RefreshCw
+                className={cn(
+                  "h-3.5 w-3.5",
+                  isLoadingLogs && "animate-spin"
+                )}
+              />
               Refresh
             </Button>
             <Button variant="outline" size="sm" onClick={handleClearLogs}>
@@ -366,12 +553,15 @@ export default function LogsPage() {
           <span className="flex-1">Details</span>
         </div>
 
-        {/* logs */}
+        {/* logs list */}
         <ScrollArea className="flex-1">
           {isLoadingLogs && mergedLogs.length === 0 ? (
             <div className="flex flex-col gap-1 p-4">
               {[1, 2, 3, 4, 5, 6].map((i) => (
-                <div key={i} className="flex items-start gap-4 px-4 py-2">
+                <div
+                  key={i}
+                  className="flex items-start gap-4 px-4 py-2"
+                >
                   <div className="w-36 h-4 bg-muted rounded animate-pulse" />
                   <div className="w-44 h-4 bg-muted rounded animate-pulse" />
                   <div className="flex-1 h-4 bg-muted rounded animate-pulse" />
@@ -381,7 +571,9 @@ export default function LogsPage() {
           ) : mergedLogs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20">
               <ScrollText className="h-10 w-10 text-muted-foreground" />
-              <p className="mt-4 text-muted-foreground text-sm">No logs yet</p>
+              <p className="mt-4 text-muted-foreground text-sm">
+                No logs yet
+              </p>
               <p className="mt-1 text-muted-foreground text-xs">
                 Trigger a signal to see logs here
               </p>
@@ -402,7 +594,8 @@ export default function LogsPage() {
                   <span
                     className={cn(
                       "w-44 shrink-0 text-[11px] font-medium uppercase",
-                      SEVERITY_COLORS[log.severity] || "text-muted-foreground"
+                      SEVERITY_COLORS[log.severity] ||
+                        "text-muted-foreground"
                     )}
                   >
                     {log.event_type.replace(/_/g, " ")}
@@ -411,7 +604,9 @@ export default function LogsPage() {
                     <span className="text-cyan-600 dark:text-cyan-400">
                       [{log.source}]
                     </span>{" "}
-                    <span className="text-muted-foreground">{log.message}</span>
+                    <span className="text-muted-foreground">
+                      {log.message}
+                    </span>
                   </span>
                 </div>
               ))}
@@ -429,19 +624,38 @@ export default function LogsPage() {
           <span className="text-[10px] text-muted-foreground">
             {mergedLogs.length} log entries
           </span>
+          <span className="text-[10px] text-muted-foreground">
+            Polling every 3s
+          </span>
         </div>
       </div>
 
-      {/* trigger cards panel */}
-      <div className="hidden w-80 border-l lg:flex flex-col overflow-hidden">
-        <div className="shrink-0 border-b px-4 py-4">
+      {/* right: trigger cards panel */}
+      <div className="hidden w-80 border-l xl:flex flex-col overflow-hidden">
+        <div className="shrink-0 border-b px-4 py-3">
           <div className="flex items-center gap-2">
             <Zap className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Signal Triggers</h2>
+            <h2 className="text-sm font-semibold">Triggers</h2>
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Simulate logistics events to test the agent
+            Fire events on Case {selectedCaseId}
+            {selectedShipment
+              ? ` (${selectedShipment.origin?.city || "?"} → ${selectedShipment.destination?.city || "?"})`
+              : ""}
           </p>
+        </div>
+
+        {/* delay thresholds info */}
+        <div className="shrink-0 border-b px-4 py-2 bg-muted/30">
+          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mb-1">
+            Auto-action thresholds
+          </p>
+          <div className="space-y-0.5 text-[10px] text-muted-foreground">
+            <p>2hrs delay → carrier reassigned</p>
+            <p>6hrs delay → email to consumer</p>
+            <p>10hrs delay → warehouse reroute + new carrier</p>
+            <p>SLA breach → auto-escalate + email</p>
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
@@ -451,7 +665,7 @@ export default function LogsPage() {
                 key={card.id}
                 className="rounded-lg border border-border p-3"
               >
-                <div className="flex items-start gap-2.5 mb-2.5">
+                <div className="flex items-start gap-2.5 mb-2">
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
                     {card.icon}
                   </div>
@@ -465,31 +679,44 @@ export default function LogsPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 mb-2.5">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium uppercase">
+                <div className="flex items-center gap-2 mb-2">
+                  <span
+                    className={cn(
+                      "text-[10px] px-1.5 py-0.5 rounded bg-muted font-medium uppercase",
+                      SEVERITY_COLORS[card.severity] ||
+                        "text-muted-foreground"
+                    )}
+                  >
                     {card.severity}
                   </span>
                   <span className="text-[10px] text-muted-foreground font-mono">
-                    {card.errorCode}
+                    {card.issue}
                   </span>
                 </div>
 
                 <button
                   onClick={() => triggerSignal(card)}
-                  disabled={loadingTriggers[card.id]}
+                  disabled={loadingTriggers[card.id] || !selectedShipment}
                   className={cn(
                     "w-full h-8 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-border",
-                    "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground",
-                    loadingTriggers[card.id] && "opacity-50 cursor-not-allowed"
+                    card.issue === "resolve"
+                      ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 border-emerald-500/30"
+                      : card.severity === "critical"
+                        ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/30"
+                        : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground",
+                    (loadingTriggers[card.id] || !selectedShipment) &&
+                      "opacity-50 cursor-not-allowed"
                   )}
                 >
                   {loadingTriggers[card.id] ? (
                     <>
                       <Loader2 className="h-3 w-3 animate-spin" />
-                      Sending...
+                      Processing...
                     </>
                   ) : (
-                    "Trigger"
+                    <>
+                      Fire on Case {selectedCaseId}
+                    </>
                   )}
                 </button>
               </div>
@@ -497,6 +724,26 @@ export default function LogsPage() {
           </div>
         </ScrollArea>
       </div>
+    </div>
+  );
+}
+
+// helper row component for shipment state display
+function Row({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string;
+  color?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-muted-foreground text-[11px]">{label}</span>
+      <span className={cn("text-[11px] font-medium capitalize", color || "text-foreground")}>
+        {value}
+      </span>
     </div>
   );
 }

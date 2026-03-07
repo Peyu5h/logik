@@ -35,6 +35,23 @@ export const config = {
       resolve: (id: string) => `${API_BASE_URL}/api/admin/incidents/${id}/resolve`,
       updateSeverity: (id: string) => `${API_BASE_URL}/api/admin/incidents/${id}/severity`,
     },
+    triggers: {
+      fire: (shipmentId: string, issue: string) => `${API_BASE_URL}/api/triggers/${shipmentId}/${issue}`,
+      info: `${API_BASE_URL}/api/triggers/info`,
+      history: (shipmentId: string) => `${API_BASE_URL}/api/triggers/history/${shipmentId}`,
+    },
+    agent: {
+      observe: `${API_BASE_URL}/api/agent/observe`,
+      shipment: (caseId: string) => `${API_BASE_URL}/api/agent/shipment/${caseId}`,
+      risk: (shipmentId: string) => `${API_BASE_URL}/api/agent/risk/${shipmentId}`,
+      carrierReliability: (carrier: string) => `${API_BASE_URL}/api/agent/carrier/${carrier}/reliability`,
+      reroute: `${API_BASE_URL}/api/agent/reroute`,
+      escalate: `${API_BASE_URL}/api/agent/escalate`,
+      reprioritize: `${API_BASE_URL}/api/agent/reprioritize`,
+      updateEta: `${API_BASE_URL}/api/agent/update-eta`,
+      updateStatus: `${API_BASE_URL}/api/agent/update-status`,
+      log: `${API_BASE_URL}/api/agent/log`,
+    },
     logs: `${API_BASE_URL}/api/logs`,
     auth: {
       signIn: `${API_BASE_URL}/api/auth/signin`,

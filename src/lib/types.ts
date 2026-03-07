@@ -86,6 +86,7 @@ export interface ShipmentIncidentRef {
 
 export interface Shipment {
   _id: string;
+  case_id: number;
   tracking_id: string;
   consumer_id: string;
   consumer?: { id: string; name: string; email: string };
@@ -96,15 +97,26 @@ export interface Shipment {
   current_location: Location | null;
   carrier: ShipmentCarrier | null;
   warehouse: ShipmentWarehouse | null;
+  initial_eta: string | null;
+  final_eta: string | null;
   estimated_delivery: string | null;
   actual_delivery: string | null;
+  delay: number;
+  value: number;
   weight: number | null;
   dimensions: Dimensions | null;
   route_history: RoutePoint[];
   sla_deadline: string | null;
   sla_breached: boolean;
+  rerouted: boolean;
+  escalated: boolean;
   risk_score: number;
   agent_notes: string | null;
+  delivery_address: string | null;
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  previous_carrier_id: string | null;
+  next_warehouse_id: string | null;
   incidents: ShipmentIncidentRef[];
   created_at: string;
   updated_at: string;
