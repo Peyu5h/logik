@@ -208,7 +208,7 @@ export const handleTrigger = async (req: Request, res: Response) => {
       );
     }
 
-    const shipment = await findShipment(shipmentId);
+    const shipment = await findShipment(shipmentId as string);
     if (!shipment) {
       return ApiResponse.notFound(res, "Shipment not found");
     }
@@ -1087,7 +1087,7 @@ export const getTriggerHistory = async (req: Request, res: Response) => {
   try {
     const { shipmentId } = req.params;
 
-    const shipment = await findShipment(shipmentId);
+    const shipment = await findShipment(shipmentId as string);
     if (!shipment) {
       return ApiResponse.notFound(res, "Shipment not found");
     }
@@ -1148,7 +1148,7 @@ export const updateCarrierReliability = async (req: Request, res: Response) => {
     const { carrierCode } = req.params;
     const { reliabilityScore, failureRate, reason } = req.body;
 
-    const carrier = await prisma.carrier.findFirst({ where: { code: carrierCode } });
+    const carrier = await prisma.carrier.findFirst({ where: { code: carrierCode as string } });
     if (!carrier) {
       return ApiResponse.notFound(res, "Carrier not found");
     }
