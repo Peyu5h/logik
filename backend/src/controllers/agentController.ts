@@ -645,6 +645,45 @@ export const carrierReliability = async (req: Request, res: Response) => {
 };
 
 // update shipment status (for agent to move shipments through flow)
+// resolves shipment by caseId, trackingId, or mongo ObjectId
+async function resolveShipment(shipmentId: string) {
+  const caseIdNum = parseInt(shipmentId);
+  if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 999) {
+    return prisma.shipment.findUnique({ where: { caseId: caseIdNum }, include: { carrier: true, consumer: { select: { id: true, name: true, email: true } } } });
+  }
+  if (shipmentId.startsWith("SHP-")) {
+    return prisma.shipment.findUnique({ where: { trackingId: shipmentId }, include: { carrier: true, consumer: { select: { id: true, name: true, email: true } } } });
+  }
+  try {
+    return await prisma.shipment.findUnique({ where: { id: shipmentId }, include: { carrier: true, consumer: { select: { id: true, name: true, email: true } } } });
+  } catch {
+    return null;
+  }
+}
+
+// fires email webhook for status changes
+async function fireStatusEmailWebhook(payload: Record<string, unknown>) {
+  const emailWebhookUrl =
+    process.env.WEBHOOK_EMAIL_URL || process.env.WEBHOOK_SHIPMENT_UPDATE_URL || "https://mihirj.app.n8n.cloud/webhook/logistics-agent";
+  try {
+    const res = await fetch(emailWebhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "email_notification", ...payload }),
+    });
+    if (!res.ok) {
+      console.warn(`[Agent] Email webhook returned ${res.status}`);
+      return { status: res.status, error: `Email webhook error (${res.status})` };
+    }
+    console.log("[Agent] Email webhook fired:", res.status);
+    return { status: res.status };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Agent] Email webhook unreachable: ${msg}`);
+    return { status: 0, error: msg };
+  }
+}
+
 export const updateShipmentStatus = async (req: Request, res: Response) => {
   try {
     const { shipmentId, status, currentLocation, agentNotes } = req.body;
@@ -653,13 +692,7 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
       return ApiResponse.error(res, "shipmentId and status are required", 400);
     }
 
-    let shipment;
-    const caseIdNum = parseInt(shipmentId);
-    if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
-      shipment = await prisma.shipment.findUnique({ where: { caseId: caseIdNum } });
-    } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
-    }
+    const shipment = await resolveShipment(shipmentId);
 
     if (!shipment) {
       return ApiResponse.notFound(res, "Shipment not found");
@@ -702,17 +735,46 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
         timestamp: new Date(),
         eventType: "agent_status_update",
         source: "agent_engine",
-        severity: "low",
+        severity: status === "delayed" ? "high" : "low",
         message: `Case ${shipment.caseId}: Status changed ${shipment.status} -> ${status}`,
         metadata: { caseId: shipment.caseId, oldStatus: shipment.status, newStatus: status } as any,
       },
     });
+
+    // trigger email on delayed/lost/cancelled status
+    let emailResult: any = null;
+    if (["delayed", "lost", "cancelled"].includes(status) && shipment.consumer?.email) {
+      emailResult = await fireStatusEmailWebhook({
+        trigger: `status_change_${status}`,
+        caseId: shipment.caseId,
+        trackingId: shipment.trackingId,
+        consumerEmail: shipment.consumer.email,
+        consumerName: shipment.consumer.name,
+        previousStatus: shipment.status,
+        newStatus: status,
+        currentLocation: currentLocation || null,
+        message: `Your shipment ${shipment.trackingId} status has changed to ${status}.${status === "delayed" ? " Our team is working on resolving this." : ""}`,
+      });
+
+      await prisma.log.create({
+        data: {
+          logId: `log-email-${Date.now().toString(36)}`,
+          timestamp: new Date(),
+          eventType: "email_notification",
+          source: "agent_engine",
+          severity: "medium",
+          message: `Case ${shipment.caseId}: Email sent to ${shipment.consumer.email} for status change to ${status}`,
+          metadata: { caseId: shipment.caseId, consumerEmail: shipment.consumer.email, status } as any,
+        },
+      });
+    }
 
     return ApiResponse.success(res, {
       caseId: shipment.caseId,
       trackingId: shipment.trackingId,
       previousStatus: shipment.status,
       newStatus: status,
+      emailTriggered: emailResult !== null,
     });
   } catch (error) {
     console.error("[Agent] Status update error:", error);
@@ -804,5 +866,73 @@ export const getShipmentByCaseId = async (req: Request, res: Response) => {
   } catch (error) {
     console.error("[Agent] Get shipment by caseId error:", error);
     return ApiResponse.error(res, "Failed to fetch shipment", 500);
+  }
+};
+
+// update carrier details (exposed for n8n agent)
+export const updateCarrier = async (req: Request, res: Response) => {
+  try {
+    const { carrierCode } = req.params;
+    const { name, reliabilityScore, avgDeliveryTime, onTimeRate, failureRate, regions, isActive } = req.body;
+
+    if (!carrierCode) {
+      return ApiResponse.error(res, "carrierCode is required", 400);
+    }
+
+    const carrier = await prisma.carrier.findUnique({ where: { code: carrierCode } });
+    if (!carrier) {
+      return ApiResponse.notFound(res, `Carrier with code ${carrierCode} not found`);
+    }
+
+    const updateData: any = { updatedAt: new Date() };
+    if (name !== undefined) updateData.name = name;
+    if (reliabilityScore !== undefined) updateData.reliabilityScore = Math.max(0, Math.min(100, reliabilityScore));
+    if (avgDeliveryTime !== undefined) updateData.avgDeliveryTime = avgDeliveryTime;
+    if (onTimeRate !== undefined) updateData.onTimeRate = Math.max(0, Math.min(100, onTimeRate));
+    if (failureRate !== undefined) updateData.failureRate = Math.max(0, Math.min(100, failureRate));
+    if (regions !== undefined && Array.isArray(regions)) updateData.regions = regions;
+    if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
+    const updated = await prisma.carrier.update({
+      where: { id: carrier.id },
+      data: updateData,
+    });
+
+    await prisma.log.create({
+      data: {
+        logId: `log-carrier-${Date.now().toString(36)}`,
+        timestamp: new Date(),
+        eventType: "carrier_update",
+        source: "agent_engine",
+        severity: "medium",
+        message: `Carrier ${carrierCode} updated by agent. Fields: ${Object.keys(updateData).filter(k => k !== "updatedAt").join(", ")}`,
+        metadata: { carrierCode, changes: updateData } as any,
+      },
+    });
+
+    return ApiResponse.success(res, {
+      carrier: {
+        code: updated.code,
+        name: updated.name,
+        reliabilityScore: updated.reliabilityScore,
+        avgDeliveryTime: updated.avgDeliveryTime,
+        onTimeRate: updated.onTimeRate,
+        failureRate: updated.failureRate,
+        regions: updated.regions,
+        isActive: updated.isActive,
+      },
+      previous: {
+        name: carrier.name,
+        reliabilityScore: carrier.reliabilityScore,
+        avgDeliveryTime: carrier.avgDeliveryTime,
+        onTimeRate: carrier.onTimeRate,
+        failureRate: carrier.failureRate,
+        regions: carrier.regions,
+        isActive: carrier.isActive,
+      },
+    });
+  } catch (error) {
+    console.error("[Agent] Update carrier error:", error);
+    return ApiResponse.error(res, "Failed to update carrier", 500);
   }
 };

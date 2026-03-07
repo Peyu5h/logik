@@ -10,6 +10,7 @@ import {
   carrierReliability,
   updateShipmentStatus,
   getShipmentByCaseId,
+  updateCarrier,
 } from "../controllers/agentController.js";
 
 const router = Router();
@@ -40,6 +41,9 @@ router.post("/update-eta", updateEta);
 
 // update shipment status
 router.post("/update-status", updateShipmentStatus);
+
+// update carrier details (for n8n agent)
+router.post("/carrier/:carrierCode/update", updateCarrier);
 
 // agent creates a log entry
 router.post("/log", createAgentLog);

@@ -15,13 +15,14 @@ import {
   ChevronLeft,
   X,
   Search,
+  Warehouse,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useShipments } from "~/hooks/useShipments";
-import type { Shipment } from "~/lib/types";
+import type { Shipment, RouteWaypoint } from "~/lib/types";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN
 
@@ -62,10 +63,39 @@ function getCityCoords(cityName: string | undefined): [number, number] | null {
   return key ? CITY_COORDS[key] : null;
 }
 
+// builds full route coords: origin -> waypoints (sorted) -> destination
+function getFullRouteCoords(shipment: Shipment): [number, number][] {
+  const coords: [number, number][] = [];
+
+  const originCoords = shipment.origin.lat && shipment.origin.lng
+    ? [shipment.origin.lng, shipment.origin.lat] as [number, number]
+    : getCityCoords(shipment.origin.city);
+  if (originCoords) coords.push(originCoords);
+
+  const waypoints = shipment.route_waypoints || [];
+  const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+  for (const wp of sorted) {
+    if (wp.lat && wp.lng) {
+      coords.push([wp.lng, wp.lat]);
+    } else {
+      const c = getCityCoords(wp.city);
+      if (c) coords.push(c);
+    }
+  }
+
+  const destCoords = shipment.destination.lat && shipment.destination.lng
+    ? [shipment.destination.lng, shipment.destination.lat] as [number, number]
+    : getCityCoords(shipment.destination.city);
+  if (destCoords) coords.push(destCoords);
+
+  return coords;
+}
+
 function getShipmentCoords(shipment: Shipment): {
   origin: [number, number] | null;
   destination: [number, number] | null;
   current: [number, number] | null;
+  waypoints: { coord: [number, number]; wp: RouteWaypoint }[];
 } {
   const originCoords = shipment.origin.lat && shipment.origin.lng
     ? [shipment.origin.lng, shipment.origin.lat] as [number, number]
@@ -82,15 +112,34 @@ function getShipmentCoords(shipment: Shipment): {
     currentCoords = getCityCoords(shipment.current_location.city);
   }
 
-  // for in-transit shipments without current location, simulate midpoint
+  // for in-transit without current location, simulate midpoint along route
   if (!currentCoords && originCoords && destCoords && shipment.status === "in_transit") {
-    currentCoords = [
-      originCoords[0] + (destCoords[0] - originCoords[0]) * 0.45,
-      originCoords[1] + (destCoords[1] - originCoords[1]) * 0.45,
-    ];
+    const fullRoute = getFullRouteCoords(shipment);
+    if (fullRoute.length >= 2) {
+      const midIdx = Math.floor(fullRoute.length * 0.45);
+      const a = fullRoute[Math.min(midIdx, fullRoute.length - 2)];
+      const b = fullRoute[Math.min(midIdx + 1, fullRoute.length - 1)];
+      currentCoords = [a[0] + (b[0] - a[0]) * 0.5, a[1] + (b[1] - a[1]) * 0.5];
+    } else {
+      currentCoords = [
+        originCoords[0] + (destCoords[0] - originCoords[0]) * 0.45,
+        originCoords[1] + (destCoords[1] - originCoords[1]) * 0.45,
+      ];
+    }
   }
 
-  return { origin: originCoords, destination: destCoords, current: currentCoords };
+  // build waypoint coords
+  const wpList = shipment.route_waypoints || [];
+  const sortedWps = [...wpList].sort((a, b) => a.order - b.order);
+  const waypoints: { coord: [number, number]; wp: RouteWaypoint }[] = [];
+  for (const wp of sortedWps) {
+    const c = wp.lat && wp.lng
+      ? [wp.lng, wp.lat] as [number, number]
+      : getCityCoords(wp.city);
+    if (c) waypoints.push({ coord: c, wp });
+  }
+
+  return { origin: originCoords, destination: destCoords, current: currentCoords, waypoints };
 }
 
 function formatDate(dateStr: string): string {
@@ -252,6 +301,39 @@ export default function LiveMapPage() {
           markersRef.current.push(marker);
         }
 
+        // waypoint warehouse markers (only for selected or all if you want)
+        if (isSelected && coords.waypoints.length > 0) {
+          coords.waypoints.forEach(({ coord, wp }) => {
+            const wpStatusColor = wp.status === "completed" ? "#10b981"
+              : wp.status === "in_transit" ? "#0ea5e9"
+              : wp.status === "rerouted" ? "#f97316"
+              : "#6366f1";
+
+            const size = isSelected ? 12 : 8;
+            const el = document.createElement("div");
+            el.className = "mapbox-marker-waypoint";
+            el.style.cssText = `width:${size}px;height:${size}px;border-radius:3px;background:${wpStatusColor};border:2px solid white;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,0.3);transform:rotate(45deg);`;
+
+            const marker = new mapboxgl.Marker({ element: el, anchor: "center" })
+              .setLngLat(coord)
+              .addTo(map);
+
+            el.addEventListener("click", () => setSelectedId(shipment._id));
+            markersRef.current.push(marker);
+
+            // label for selected
+            if (isSelected) {
+              const label = document.createElement("div");
+              label.style.cssText = `position:absolute;white-space:nowrap;font-size:9px;font-weight:600;color:white;background:${wpStatusColor};padding:1px 5px;border-radius:3px;transform:translateY(-20px);pointer-events:none;box-shadow:0 1px 2px rgba(0,0,0,0.3);`;
+              label.textContent = wp.city || wp.warehouse_code;
+              const labelMarker = new mapboxgl.Marker({ element: label, anchor: "center" })
+                .setLngLat(coord)
+                .addTo(map);
+              markersRef.current.push(labelMarker);
+            }
+          });
+        }
+
         // destination marker
         if (coords.destination) {
           const el = document.createElement("div");
@@ -289,15 +371,18 @@ export default function LiveMapPage() {
           markersRef.current.push(marker);
         }
 
-        // route line for selected shipment
+        // route line through all waypoints for selected shipment
         if (isSelected && coords.origin && coords.destination) {
-          const routeCoords: [number, number][] = [coords.origin];
-          if (coords.current) routeCoords.push(coords.current);
-          routeCoords.push(coords.destination);
+          const fullRoute = getFullRouteCoords(shipment);
+          // use full multi-hop route if available, fallback to origin->dest
+          const routeCoords: [number, number][] = fullRoute.length >= 2
+            ? fullRoute
+            : [coords.origin, coords.destination];
 
           const sourceId = `route-${shipment._id}`;
 
           try {
+            // full route line (dashed for pending segments)
             map.addSource(sourceId, {
               type: "geojson",
               data: {
@@ -316,40 +401,60 @@ export default function LiveMapPage() {
               source: sourceId,
               paint: {
                 "line-color": sc.markerColor,
-                "line-width": 3,
-                "line-opacity": 0.8,
+                "line-width": 2.5,
+                "line-opacity": 0.5,
+                "line-dasharray": [4, 3],
               },
             });
 
             sourcesAdded.current.add(sourceId);
 
-            // if there's a current location, add completed path
-            if (coords.current) {
-              const completedId = `completed-${shipment._id}`;
-              map.addSource(completedId, {
-                type: "geojson",
-                data: {
-                  type: "Feature",
-                  properties: {},
-                  geometry: {
-                    type: "LineString",
-                    coordinates: [coords.origin, coords.current],
+            // completed segments (solid line through completed waypoints)
+            const waypoints = shipment.route_waypoints || [];
+            const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+            const completedWps = sorted.filter(wp => wp.status === "completed" || wp.status === "in_transit");
+
+            if (completedWps.length > 0 || coords.current) {
+              const completedCoords: [number, number][] = [coords.origin];
+
+              for (const wp of completedWps) {
+                const c = wp.lat && wp.lng
+                  ? [wp.lng, wp.lat] as [number, number]
+                  : getCityCoords(wp.city);
+                if (c) completedCoords.push(c);
+              }
+
+              if (coords.current) {
+                completedCoords.push(coords.current);
+              }
+
+              if (completedCoords.length >= 2) {
+                const completedId = `completed-${shipment._id}`;
+                map.addSource(completedId, {
+                  type: "geojson",
+                  data: {
+                    type: "Feature",
+                    properties: {},
+                    geometry: {
+                      type: "LineString",
+                      coordinates: completedCoords,
+                    },
                   },
-                },
-              });
+                });
 
-              map.addLayer({
-                id: `${completedId}-line`,
-                type: "line",
-                source: completedId,
-                paint: {
-                  "line-color": "#10b981",
-                  "line-width": 3.5,
-                  "line-opacity": 0.9,
-                },
-              });
+                map.addLayer({
+                  id: `${completedId}-line`,
+                  type: "line",
+                  source: completedId,
+                  paint: {
+                    "line-color": "#10b981",
+                    "line-width": 3.5,
+                    "line-opacity": 0.9,
+                  },
+                });
 
-              sourcesAdded.current.add(completedId);
+                sourcesAdded.current.add(completedId);
+              }
             }
           } catch (e) {
             // source may already exist
@@ -514,16 +619,33 @@ export default function LiveMapPage() {
             </div>
 
             <div className="p-4 space-y-3">
-              {/* route */}
-              <div className="flex items-center gap-2 text-sm">
-                <div className="flex items-center gap-1.5">
-                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
-                  <span className="font-medium">{selected.origin.city || selected.origin.address || "Origin"}</span>
-                </div>
-                <ArrowRight className="h-3 w-3 text-muted-foreground shrink-0" />
-                <div className="flex items-center gap-1.5">
-                  <div className="h-2 w-2 rounded-full" style={{ background: statusConfig[selected.status]?.markerColor }} />
-                  <span className="font-medium">{selected.destination.city || selected.destination.address || "Destination"}</span>
+              {/* route with waypoints */}
+              <div className="space-y-1">
+                <div className="flex items-center flex-wrap gap-1 text-sm">
+                  <div className="flex items-center gap-1">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+                    <span className="font-medium text-xs">{selected.origin.city || selected.origin.address || "Origin"}</span>
+                  </div>
+                  {selected.route_waypoints && selected.route_waypoints.length > 0 && (
+                    [...selected.route_waypoints].sort((a, b) => a.order - b.order).map((wp, i) => {
+                      const wpColor = wp.status === "completed" ? "#10b981"
+                        : wp.status === "in_transit" ? "#0ea5e9"
+                        : wp.status === "rerouted" ? "#f97316"
+                        : "#6366f1";
+                      return (
+                        <div key={i} className="flex items-center gap-1">
+                          <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+                          <div className="h-2 w-2 shrink-0 rotate-45 rounded-[1px]" style={{ background: wpColor }} />
+                          <span className="text-[10px] text-muted-foreground">{wp.city || wp.warehouse_code}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                  <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+                  <div className="flex items-center gap-1">
+                    <div className="h-2 w-2 rounded-full shrink-0" style={{ background: statusConfig[selected.status]?.markerColor }} />
+                    <span className="font-medium text-xs">{selected.destination.city || selected.destination.address || "Destination"}</span>
+                  </div>
                 </div>
               </div>
 
@@ -612,6 +734,10 @@ export default function LiveMapPage() {
             <div className="flex items-center gap-2 text-[10px]">
               <div className="h-2 w-2 rounded-full bg-sky-500" />
               <span className="text-muted-foreground">Destination</span>
+            </div>
+            <div className="flex items-center gap-2 text-[10px]">
+              <div className="h-2 w-2 rotate-45 rounded-[1px] bg-indigo-500" />
+              <span className="text-muted-foreground">Warehouse</span>
             </div>
             <div className="flex items-center gap-2 text-[10px]">
               <div className="h-3 w-3 rounded-full bg-sky-500 flex items-center justify-center">

@@ -42,6 +42,19 @@ export interface RoutePoint {
   status?: string;
 }
 
+export interface RouteWaypoint {
+  warehouse_code: string;
+  warehouse_name: string;
+  city: string;
+  region: string;
+  lat: number;
+  lng: number;
+  order: number;
+  status: string;
+  arrived_at: string | null;
+  departed_at: string | null;
+}
+
 export type ShipmentStatus =
   | "pending"
   | "picked_up"
@@ -106,6 +119,7 @@ export interface Shipment {
   weight: number | null;
   dimensions: Dimensions | null;
   route_history: RoutePoint[];
+  route_waypoints: RouteWaypoint[];
   sla_deadline: string | null;
   sla_breached: boolean;
   rerouted: boolean;
