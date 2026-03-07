@@ -27,6 +27,16 @@ router.get("/risk/:shipmentId", assessRisk);
 // carrier reliability check
 router.get("/carrier/:carrier/reliability", carrierReliability);
 
+// update carrier details - supports GET/POST/PUT for n8n compatibility
+router.post("/carrier/:carrierCode/update", updateCarrier);
+router.get("/carrier/:carrierCode/update", updateCarrier);
+router.put("/carrier/:carrierCode/update", updateCarrier);
+
+// flat route for n8n agent (POST /api/agent/update-carrier)
+router.post("/update-carrier", updateCarrier);
+router.get("/update-carrier", updateCarrier);
+router.put("/update-carrier", updateCarrier);
+
 // reroute shipment to new carrier
 router.post("/reroute", reroute);
 
@@ -41,9 +51,6 @@ router.post("/update-eta", updateEta);
 
 // update shipment status
 router.post("/update-status", updateShipmentStatus);
-
-// update carrier details (for n8n agent)
-router.post("/carrier/:carrierCode/update", updateCarrier);
 
 // agent creates a log entry
 router.post("/log", createAgentLog);

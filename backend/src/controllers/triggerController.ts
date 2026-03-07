@@ -737,8 +737,8 @@ async function handleArrivedWarehouse(res: Response, shipment: any) {
   let newCarrierInfo: any = null;
   let newStatus = "at_warehouse";
 
-  // if delay is significant, swap carrier for the next leg
-  if (shipment.delay >= 120) {
+  // if delay is severe (>= 8hrs), swap carrier for the next leg
+  if (shipment.delay >= 480) {
     const destRegion = shipment.destination?.region || "";
     const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion, currentWp.region]);
     if (bestCarrier && bestCarrier.id !== shipment.carrierId) {
@@ -969,15 +969,6 @@ async function handleResetDemo(res: Response, shipment: any) {
     { caseId: shipment.caseId }
   );
 
-  const webhookResult = await fireWebhook({
-    trigger_type: "reset_demo",
-    caseId: shipment.caseId,
-    trackingId: shipment.trackingId,
-    shipmentId: shipment.id,
-    currentState: { status: "pending", delay: 0, riskScore: 0, slaBreached: false },
-    timestamp: now.toISOString(),
-  });
-
   return ApiResponse.success(res, {
     trigger: "reset_demo",
     caseId: shipment.caseId,
@@ -985,7 +976,6 @@ async function handleResetDemo(res: Response, shipment: any) {
     message: `Case ${caseId} reset to default demo state`,
     route: routeSummary(updated),
     routeWaypoints: updateData.routeWaypoints,
-    webhookResult,
   });
 }
 
@@ -1074,11 +1064,31 @@ export const getTriggerInfo = async (_req: Request, res: Response) => {
     })),
     thresholds: {
       delay_per_press_minutes: DELAY_MINUTES,
-      carrier_reassign_minutes: 120,
+      carrier_reassign_at_delay_minutes: 120,
       email_notification_minutes: 120,
       followup_email_minutes: 360,
+      carrier_swap_at_warehouse_minutes: 480,
       warehouse_reroute_minutes: 600,
       sla_breach_auto_escalate: true,
+    },
+    endpoints: {
+      update_carrier: "POST /api/agent/update-carrier  (body: { carrierCode, reliabilityScore?, failureRate?, onTimeRate?, avgDeliveryTime?, regions?, name?, isActive? })",
+      update_carrier_by_code: "POST /api/agent/carrier/:carrierCode/update  (same body minus carrierCode)",
+      update_status: "POST /api/agent/update-status  (body: { shipmentId, status, currentLocation?, agentNotes? })",
+      reroute: "POST /api/agent/reroute  (body: { shipmentId, newCarrier?, reason?, autonomous? })",
+      escalate: "POST /api/agent/escalate  (body: { shipmentId, reason?, urgency? })",
+      reprioritize: "POST /api/agent/reprioritize  (body: { shipmentId, newPriority, reason? })",
+      update_eta: "POST /api/agent/update-eta  (body: { shipmentId, newEtaMs, reason? })",
+      observe: "GET /api/agent/observe",
+      shipment_by_case: "GET /api/agent/shipment/:caseId",
+      carrier_reliability: "GET /api/agent/carrier/:carrierCode/reliability",
+    },
+    delay_behavior: {
+      "2hrs_120min": "Carrier reassigned to best available. Email sent to consumer.",
+      "6hrs_360min": "Follow-up email sent. Priority escalated to urgent.",
+      "8hrs_480min": "At warehouse arrival: carrier swapped for next leg.",
+      "10hrs_600min": "Warehouse rerouted. New carrier assigned. Escalated.",
+      "sla_breach": "Auto-escalate to urgent. Email notification sent.",
     },
   });
 };

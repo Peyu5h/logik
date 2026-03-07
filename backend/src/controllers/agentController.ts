@@ -870,28 +870,81 @@ export const getShipmentByCaseId = async (req: Request, res: Response) => {
 };
 
 // update carrier details (exposed for n8n agent)
+// accepts carrierCode from params, body, or query for max compatibility
+// n8n may send GET with query params or POST with body
 export const updateCarrier = async (req: Request, res: Response) => {
   try {
-    const { carrierCode } = req.params;
-    const { name, reliabilityScore, avgDeliveryTime, onTimeRate, failureRate, regions, isActive } = req.body;
+    // merge body + query so both GET?key=val and POST {body} work
+    const fields: any = { ...req.query, ...req.body };
+
+    // resolve carrier code: route param > body/query field
+    const carrierCode =
+      req.params.carrierCode ||
+      fields.carrierCode ||
+      fields.carrier_code ||
+      fields.code;
 
     if (!carrierCode) {
-      return ApiResponse.error(res, "carrierCode is required", 400);
+      return ApiResponse.error(
+        res,
+        "carrierCode is required (as URL param, query param, or body field)",
+        400,
+      );
     }
 
-    const carrier = await prisma.carrier.findUnique({ where: { code: carrierCode as string } });
+    const carrier = await prisma.carrier.findUnique({ where: { code: String(carrierCode) } });
     if (!carrier) {
       return ApiResponse.notFound(res, `Carrier with code ${carrierCode} not found`);
     }
 
+    // coerce types — n8n GET sends everything as strings
+    const toNum = (v: unknown): number | undefined => {
+      if (v === undefined || v === null || v === "") return undefined;
+      const n = Number(v);
+      return isNaN(n) ? undefined : n;
+    };
+
+    const toBool = (v: unknown): boolean | undefined => {
+      if (v === undefined || v === null || v === "") return undefined;
+      if (typeof v === "boolean") return v;
+      if (v === "true" || v === "1") return true;
+      if (v === "false" || v === "0") return false;
+      return undefined;
+    };
+
+    // parse regions — may arrive as JSON string from n8n
+    let parsedRegions: string[] | undefined;
+    if (fields.regions !== undefined) {
+      if (Array.isArray(fields.regions)) {
+        parsedRegions = fields.regions;
+      } else if (typeof fields.regions === "string") {
+        try {
+          const parsed = JSON.parse(fields.regions);
+          if (Array.isArray(parsed)) parsedRegions = parsed;
+        } catch {
+          // comma-separated fallback
+          parsedRegions = fields.regions.split(",").map((s: string) => s.trim()).filter(Boolean);
+        }
+      }
+    }
+
     const updateData: any = { updatedAt: new Date() };
-    if (name !== undefined) updateData.name = name;
-    if (reliabilityScore !== undefined) updateData.reliabilityScore = Math.max(0, Math.min(100, reliabilityScore));
-    if (avgDeliveryTime !== undefined) updateData.avgDeliveryTime = avgDeliveryTime;
-    if (onTimeRate !== undefined) updateData.onTimeRate = Math.max(0, Math.min(100, onTimeRate));
-    if (failureRate !== undefined) updateData.failureRate = Math.max(0, Math.min(100, failureRate));
-    if (regions !== undefined && Array.isArray(regions)) updateData.regions = regions;
-    if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+    if (fields.name !== undefined && fields.name !== "") updateData.name = String(fields.name);
+    const rs = toNum(fields.reliabilityScore);
+    if (rs !== undefined) updateData.reliabilityScore = Math.max(0, Math.min(100, rs));
+    const adt = toNum(fields.avgDeliveryTime);
+    if (adt !== undefined) updateData.avgDeliveryTime = adt;
+    const otr = toNum(fields.onTimeRate);
+    if (otr !== undefined) updateData.onTimeRate = Math.max(0, Math.min(100, otr));
+    const fr = toNum(fields.failureRate);
+    if (fr !== undefined) updateData.failureRate = Math.max(0, Math.min(100, fr));
+    if (parsedRegions !== undefined) updateData.regions = parsedRegions;
+    const ia = toBool(fields.isActive);
+    if (ia !== undefined) updateData.isActive = ia;
+
+    if (Object.keys(updateData).length <= 1) {
+      return ApiResponse.error(res, "No updatable fields provided", 400);
+    }
 
     const updated = await prisma.carrier.update({
       where: { id: carrier.id },

@@ -88,7 +88,7 @@ const TRIGGER_CARDS: TriggerCard[] = [
   {
     id: "arrived-warehouse",
     title: "Arrived at Warehouse",
-    description: "Advance to next waypoint. Swaps carrier if delay is high.",
+    description: "Advance to next waypoint. Swaps carrier if delay >= 8hrs.",
     icon: <Warehouse className="h-4 w-4" />,
     severity: "medium",
     issue: "arrived_warehouse",
