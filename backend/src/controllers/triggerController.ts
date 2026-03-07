@@ -3,67 +3,31 @@ import prisma from "../config/database.js";
 import ApiResponse from "../utils/apiResponse.js";
 import { config } from "../config/env.js";
 
-// valid trigger issue types
 const VALID_ISSUES = [
-  "warehouse_congestion",
-  "carrier_breakdown",
-  "late_pickup",
-  "weather_disruption",
-  "customs_hold",
-  "inaccurate_ETA",
+  "delay",
   "SLA_BREACH",
+  "set_in_transit",
+  "arrived_warehouse",
+  "reset_demo",
   "resolve",
 ] as const;
 
 type IssueType = (typeof VALID_ISSUES)[number];
 
-// delay config per issue type (minutes)
-const ISSUE_DELAY_MAP: Record<string, number> = {
-  warehouse_congestion: 180,
-  carrier_breakdown: 240,
-  late_pickup: 120,
-  weather_disruption: 300,
-  customs_hold: 360,
-  inaccurate_ETA: 90,
-  SLA_BREACH: 0,
-  resolve: 0,
-};
+// delay adds +2hrs each press, auto-escalation handled by thresholds
+const DELAY_MINUTES = 120;
 
-// risk score impact per issue
-const ISSUE_RISK_MAP: Record<string, number> = {
-  warehouse_congestion: 25,
-  carrier_breakdown: 40,
-  late_pickup: 20,
-  weather_disruption: 35,
-  customs_hold: 30,
-  inaccurate_ETA: 15,
-  SLA_BREACH: 50,
-  resolve: -100,
-};
+// risk added per delay press
+const DELAY_RISK_DELTA = 20;
 
-// severity per issue
-const ISSUE_SEVERITY_MAP: Record<string, string> = {
-  warehouse_congestion: "high",
-  carrier_breakdown: "critical",
-  late_pickup: "medium",
-  weather_disruption: "high",
-  customs_hold: "high",
-  inaccurate_ETA: "medium",
-  SLA_BREACH: "critical",
-  resolve: "low",
-};
-
-// generates a unique log id
 function logId(): string {
   return `log-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 }
 
-// generates a unique incident id
 function incidentId(): string {
   return `INC-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 5).toUpperCase()}`;
 }
 
-// creates a log entry
 async function createLog(
   eventType: string,
   source: string,
@@ -84,7 +48,7 @@ async function createLog(
   });
 }
 
-// fires n8n webhook with trigger context
+// fires n8n webhook
 async function fireWebhook(payload: Record<string, unknown>) {
   const webhookUrl = config.webhook.agentUrl;
   try {
@@ -95,8 +59,8 @@ async function fireWebhook(payload: Record<string, unknown>) {
     });
     const text = await res.text();
     if (!res.ok) {
-      console.warn(`[Trigger] Agent webhook returned ${res.status} - n8n workflow may not be configured at ${webhookUrl}`);
-      return { status: res.status, response: null, error: `Agent webhook not responding (${res.status}). Configure n8n workflow at ${webhookUrl}` };
+      console.warn(`[Trigger] Agent webhook returned ${res.status} at ${webhookUrl}`);
+      return { status: res.status, response: null, error: `Webhook not responding (${res.status})` };
     }
     let parsed = null;
     try {
@@ -109,15 +73,14 @@ async function fireWebhook(payload: Record<string, unknown>) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[Trigger] Agent webhook unreachable: ${msg}`);
-    return { status: 0, response: null, error: `Agent webhook unreachable. Ensure n8n is running and webhook URL is correct.` };
+    return { status: 0, response: null, error: `Webhook unreachable: ${msg}` };
   }
 }
 
 // fires email notification webhook
 async function fireEmailWebhook(payload: Record<string, unknown>) {
   const emailWebhookUrl =
-    process.env.WEBHOOK_EMAIL_URL ||
-    config.webhook.shipmentUpdateUrl;
+    process.env.WEBHOOK_EMAIL_URL || config.webhook.shipmentUpdateUrl;
   try {
     const res = await fetch(emailWebhookUrl, {
       method: "POST",
@@ -125,19 +88,19 @@ async function fireEmailWebhook(payload: Record<string, unknown>) {
       body: JSON.stringify({ type: "email_notification", ...payload }),
     });
     if (!res.ok) {
-      console.warn(`[Trigger] Email webhook returned ${res.status} - n8n email workflow may not be configured at ${emailWebhookUrl}`);
-      return { status: res.status, error: `Email webhook not responding (${res.status}). Configure n8n email workflow.` };
+      console.warn(`[Trigger] Email webhook returned ${res.status}`);
+      return { status: res.status, error: `Email webhook not responding (${res.status})` };
     }
     console.log("[Trigger] Email webhook fired:", res.status);
     return { status: res.status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[Trigger] Email webhook unreachable: ${msg}`);
-    return { status: 0, error: `Email webhook unreachable. Ensure n8n is running.` };
+    return { status: 0, error: `Email webhook unreachable` };
   }
 }
 
-// finds best available carrier for reroute
+// finds best available carrier
 async function findBestCarrier(
   excludeCarrierId: string | null,
   regions: string[]
@@ -150,11 +113,9 @@ async function findBestCarrier(
     orderBy: { reliabilityScore: "desc" },
   });
 
-  // prefer carrier that covers the required regions
   const regionMatch = carriers.find((c) =>
     regions.some((r) => c.regions.includes(r))
   );
-
   return regionMatch || carriers[0] || null;
 }
 
@@ -162,7 +123,7 @@ async function findBestCarrier(
 async function findNextWarehouse(
   currentWarehouseId: string | null,
   destinationRegion: string
-): Promise<{ id: string; name: string; code: string } | null> {
+): Promise<{ id: string; name: string; code: string; location: any } | null> {
   const warehouses = await prisma.warehouse.findMany({
     where: {
       isActive: true,
@@ -173,15 +134,68 @@ async function findNextWarehouse(
     orderBy: { utilizationPct: "asc" },
   });
 
-  // prefer warehouse in destination region
   const regionMatch = warehouses.find((w) =>
     w.regions.includes(destinationRegion)
   );
-
   return regionMatch || warehouses[0] || null;
 }
 
-// handles trigger for a specific shipment and issue
+// degrades carrier reliability after an incident
+async function degradeCarrierReliability(carrierId: string, amount: number, reason: string) {
+  try {
+    const carrier = await prisma.carrier.findUnique({ where: { id: carrierId } });
+    if (!carrier) return;
+
+    const newScore = Math.max(0, Math.min(100, carrier.reliabilityScore - amount));
+    const newFailureRate = Math.min(100, carrier.failureRate + amount * 0.1);
+
+    await prisma.carrier.update({
+      where: { id: carrierId },
+      data: {
+        reliabilityScore: newScore,
+        failureRate: newFailureRate,
+        lastIncident: new Date(),
+      },
+    });
+
+    await createLog(
+      "carrier_reliability_update",
+      "trigger_engine",
+      "medium",
+      `Carrier ${carrier.code}: reliability ${carrier.reliabilityScore}% -> ${newScore}% (${reason})`,
+      { carrierCode: carrier.code, oldScore: carrier.reliabilityScore, newScore, reason }
+    );
+  } catch (err) {
+    console.warn("[Trigger] Failed to degrade carrier reliability:", err);
+  }
+}
+
+// builds route summary from waypoints
+function routeSummary(shipment: any): string[] {
+  const waypoints: any[] = shipment.routeWaypoints || [];
+  return [
+    shipment.origin?.city,
+    ...waypoints.sort((a: any, b: any) => a.order - b.order).map((wp: any) => wp.city),
+    shipment.destination?.city,
+  ].filter(Boolean);
+}
+
+// finds a shipment by caseId or mongo id with full includes
+async function findShipment(shipmentId: string) {
+  const caseIdNum = parseInt(shipmentId);
+  const include = {
+    carrier: true,
+    warehouse: true,
+    consumer: { select: { id: true, name: true, email: true } },
+  };
+
+  if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 10) {
+    return prisma.shipment.findUnique({ where: { caseId: caseIdNum }, include });
+  }
+  return prisma.shipment.findUnique({ where: { id: shipmentId }, include });
+}
+
+// ─── main trigger handler ───
 export const handleTrigger = async (req: Request, res: Response) => {
   try {
     const { shipmentId, issue } = req.params;
@@ -189,140 +203,137 @@ export const handleTrigger = async (req: Request, res: Response) => {
     if (!VALID_ISSUES.includes(issue as IssueType)) {
       return ApiResponse.error(
         res,
-        `Invalid issue type. Valid types: ${VALID_ISSUES.join(", ")}`,
+        `Invalid issue type. Valid: ${VALID_ISSUES.join(", ")}`,
         400
       );
     }
 
-    // find shipment by caseId (integer) or mongo id
-    let shipment;
-    const caseIdNum = parseInt(shipmentId as string);
-    if (!isNaN(caseIdNum) && caseIdNum >= 1 && caseIdNum <= 3) {
-      shipment = await prisma.shipment.findUnique({
-        where: { caseId: caseIdNum },
-        include: {
-          carrier: true,
-          warehouse: true,
-          consumer: { select: { id: true, name: true, email: true } },
-        },
-      });
-    } else {
-      shipment = await prisma.shipment.findUnique({
-        where: { id: shipmentId as string },
-        include: {
-          carrier: true,
-          warehouse: true,
-          consumer: { select: { id: true, name: true, email: true } },
-        },
-      });
-    }
-
+    const shipment = await findShipment(shipmentId);
     if (!shipment) {
       return ApiResponse.notFound(res, "Shipment not found");
     }
 
     const issueType = issue as IssueType;
-    const delayMinutes = ISSUE_DELAY_MAP[issueType] || 0;
-    const riskDelta = ISSUE_RISK_MAP[issueType] || 0;
-    const severity = ISSUE_SEVERITY_MAP[issueType] || "medium";
-    const now = new Date();
 
-    // handle resolve trigger
-    if (issueType === "resolve") {
-      return handleResolveTrigger(res, shipment);
+    // dispatch to specific handlers
+    switch (issueType) {
+      case "resolve":
+        return handleResolve(res, shipment);
+      case "reset_demo":
+        return handleResetDemo(res, shipment);
+      case "set_in_transit":
+        return handleSetInTransit(res, shipment);
+      case "arrived_warehouse":
+        return handleArrivedWarehouse(res, shipment);
+      case "SLA_BREACH":
+        return handleSlaBreach(res, shipment);
+      case "delay":
+        return handleDelay(res, shipment);
+      default:
+        return ApiResponse.error(res, "Unknown trigger", 400);
+    }
+  } catch (error) {
+    console.error("[Trigger] Error:", error);
+    return ApiResponse.error(res, "Failed to process trigger", 500);
+  }
+};
+
+// ─── DELAY trigger (+2hrs each press, auto-escalates) ───
+async function handleDelay(res: Response, shipment: any) {
+  const now = new Date();
+  const newDelay = shipment.delay + DELAY_MINUTES;
+  const newRisk = Math.min(100, Math.max(0, shipment.riskScore + DELAY_RISK_DELTA));
+  const newFinalEta = shipment.finalEta
+    ? new Date(shipment.finalEta.getTime() + DELAY_MINUTES * 60 * 1000)
+    : shipment.estimatedDelivery
+      ? new Date(shipment.estimatedDelivery.getTime() + DELAY_MINUTES * 60 * 1000)
+      : null;
+
+  const slaBreached =
+    shipment.slaBreached ||
+    (shipment.slaDeadline && newFinalEta && newFinalEta > shipment.slaDeadline);
+
+  let newStatus = shipment.status as string;
+  if (shipment.status !== "delivered" && shipment.status !== "cancelled") {
+    if (newDelay >= 120) newStatus = "delayed";
+  }
+
+  let newPriority = shipment.priority as string;
+  if (newDelay >= 360) {
+    newPriority = "urgent";
+  } else if (newDelay >= 240) {
+    newPriority = "high";
+  }
+
+  const updateData: any = {
+    delay: newDelay,
+    riskScore: newRisk,
+    finalEta: newFinalEta,
+    estimatedDelivery: newFinalEta,
+    slaBreached: slaBreached || false,
+    status: newStatus,
+    priority: newPriority,
+    updatedAt: now,
+  };
+
+  let carrierReassigned = false;
+  let newCarrierInfo: any = null;
+  let emailTriggered = false;
+  let warehouseRerouted = false;
+  let newWarehouseInfo: any = null;
+
+  // degrade current carrier reliability on every delay
+  if (shipment.carrierId) {
+    await degradeCarrierReliability(shipment.carrierId, 3, `delay on case ${shipment.caseId} (+${newDelay}min total)`);
+  }
+
+  // ── threshold: 2hrs total → reassign carrier + send email ──
+  if (newDelay >= 120 && shipment.delay < 120) {
+    const destRegion = shipment.destination?.region || "";
+    const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
+    if (bestCarrier) {
+      updateData.previousCarrierId = shipment.carrierId;
+      updateData.carrierId = bestCarrier.id;
+      updateData.rerouted = true;
+      updateData.agentNotes = `Carrier reassigned ${shipment.carrier?.code || "?"} -> ${bestCarrier.code} due to ${Math.round(newDelay / 60)}hr delay`;
+      carrierReassigned = true;
+      newCarrierInfo = bestCarrier;
+
+      await createLog(
+        "carrier_reassigned",
+        "trigger_engine",
+        "high",
+        `Case ${shipment.caseId}: Carrier reassigned to ${bestCarrier.code} (reliability: ${bestCarrier.reliabilityScore}%) - ${Math.round(newDelay / 60)}hr delay`,
+        { caseId: shipment.caseId, oldCarrier: shipment.carrier?.code, newCarrier: bestCarrier.code }
+      );
     }
 
-    // calculate new values
-    const newDelay = shipment.delay + delayMinutes;
-    const newRisk = Math.min(100, Math.max(0, shipment.riskScore + riskDelta));
-    const newFinalEta = shipment.finalEta
-      ? new Date(shipment.finalEta.getTime() + delayMinutes * 60 * 1000)
-      : shipment.estimatedDelivery
-        ? new Date(shipment.estimatedDelivery.getTime() + delayMinutes * 60 * 1000)
-        : null;
+    // email consumer at 2hr threshold
+    emailTriggered = true;
+    await fireEmailWebhook({
+      trigger: "delay_email_2hrs",
+      caseId: shipment.caseId,
+      trackingId: shipment.trackingId,
+      consumerEmail: shipment.consumer?.email,
+      consumerName: shipment.consumer?.name,
+      totalDelay: newDelay,
+      currentStatus: newStatus,
+      estimatedDelivery: newFinalEta?.toISOString(),
+      message: `Your shipment ${shipment.trackingId} is delayed by ${Math.round(newDelay / 60)}hrs. We've reassigned your carrier for faster delivery.`,
+    });
 
-    // check sla breach
-    const slaBreached =
-      shipment.slaBreached ||
-      (shipment.slaDeadline && newFinalEta && newFinalEta > shipment.slaDeadline);
+    await createLog(
+      "email_notification",
+      "notification_service",
+      "high",
+      `Case ${shipment.caseId}: Delay email sent to ${shipment.consumer?.email} - total delay ${Math.round(newDelay / 60)}hrs`,
+      { caseId: shipment.caseId, consumerEmail: shipment.consumer?.email, delayMinutes: newDelay }
+    );
+  }
 
-    // determine new status
-    let newStatus = shipment.status as string;
-    if ((issueType as string) !== "resolve" && shipment.status !== "delivered" && shipment.status !== "cancelled") {
-      if (newDelay >= 120 || issueType === "carrier_breakdown" || issueType === "late_pickup") {
-        newStatus = "delayed";
-      }
-    }
-
-    // determine new priority based on accumulated delay
-    let newPriority = shipment.priority as string;
-    if (newDelay >= 360) {
-      newPriority = "urgent";
-    } else if (newDelay >= 240) {
-      newPriority = "high";
-    }
-
-    const updateData: any = {
-      delay: newDelay,
-      riskScore: newRisk,
-      finalEta: newFinalEta,
-      estimatedDelivery: newFinalEta,
-      slaBreached: slaBreached || false,
-      status: newStatus,
-      priority: newPriority,
-      updatedAt: now,
-    };
-
-    // late pickup: if pending for 2+ hrs total delay, reassign carrier
-    let carrierReassigned = false;
-    let newCarrierInfo: any = null;
-
-    if (issueType === "late_pickup" && newDelay >= 120 && shipment.status === "pending") {
-      const destRegion = shipment.destination?.region || "";
-      const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
-      if (bestCarrier) {
-        updateData.previousCarrierId = shipment.carrierId;
-        updateData.carrierId = bestCarrier.id;
-        updateData.rerouted = true;
-        updateData.agentNotes = `Carrier reassigned from ${shipment.carrier?.code || "unknown"} to ${bestCarrier.code} due to late pickup (${newDelay}min delay)`;
-        carrierReassigned = true;
-        newCarrierInfo = bestCarrier;
-
-        await createLog(
-          "carrier_reassigned",
-          "trigger_engine",
-          "high",
-          `Case ${shipment.caseId}: Carrier reassigned to ${bestCarrier.code} (reliability: ${bestCarrier.reliabilityScore}%) due to late pickup`,
-          { caseId: shipment.caseId, oldCarrier: shipment.carrier?.code, newCarrier: bestCarrier.code }
-        );
-      }
-    }
-
-    // carrier breakdown: immediate reassignment
-    if (issueType === "carrier_breakdown") {
-      const destRegion = shipment.destination?.region || "";
-      const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
-      if (bestCarrier) {
-        updateData.previousCarrierId = shipment.carrierId;
-        updateData.carrierId = bestCarrier.id;
-        updateData.rerouted = true;
-        updateData.agentNotes = `Carrier ${shipment.carrier?.code || "unknown"} breakdown. Reassigned to ${bestCarrier.code}`;
-        carrierReassigned = true;
-        newCarrierInfo = bestCarrier;
-
-        await createLog(
-          "carrier_reassigned",
-          "trigger_engine",
-          "critical",
-          `Case ${shipment.caseId}: Emergency reassignment to ${bestCarrier.code} due to carrier breakdown`,
-          { caseId: shipment.caseId, oldCarrier: shipment.carrier?.code, newCarrier: bestCarrier.code }
-        );
-      }
-    }
-
-    // 6hrs total delay: trigger email notification
-    let emailTriggered = false;
-    if (newDelay >= 360 && shipment.delay < 360) {
+  // ── threshold: 6hrs → send follow-up email ──
+  if (newDelay >= 360 && shipment.delay < 360) {
+    if (!emailTriggered) {
       emailTriggered = true;
       await fireEmailWebhook({
         trigger: "delay_email_6hrs",
@@ -333,115 +344,353 @@ export const handleTrigger = async (req: Request, res: Response) => {
         totalDelay: newDelay,
         currentStatus: newStatus,
         estimatedDelivery: newFinalEta?.toISOString(),
-        message: `Your shipment ${shipment.trackingId} is experiencing significant delays (${Math.round(newDelay / 60)}hrs). We are actively working to resolve this.`,
+        message: `Your shipment ${shipment.trackingId} is significantly delayed (${Math.round(newDelay / 60)}hrs). Our team is actively working on resolution.`,
       });
-
-      await createLog(
-        "email_notification",
-        "notification_service",
-        "high",
-        `Case ${shipment.caseId}: Delay email sent to ${shipment.consumer?.email} - total delay ${Math.round(newDelay / 60)}hrs`,
-        { caseId: shipment.caseId, consumerEmail: shipment.consumer?.email, delayMinutes: newDelay }
-      );
     }
+  }
 
-    // 10hrs total delay: reroute to different warehouse + new carrier
-    let warehouseRerouted = false;
-    let newWarehouseInfo: any = null;
-    if (newDelay >= 600 && shipment.delay < 600) {
-      const destRegion = shipment.destination?.region || "";
-      const nextWarehouse = await findNextWarehouse(shipment.warehouseId, destRegion);
-      if (nextWarehouse) {
-        updateData.nextWarehouseId = nextWarehouse.id;
-        updateData.warehouseId = nextWarehouse.id;
-        updateData.rerouted = true;
-        updateData.escalated = true;
-        warehouseRerouted = true;
-        newWarehouseInfo = nextWarehouse;
-
-        // also get best carrier for the new warehouse region
-        if (!carrierReassigned) {
-          const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
-          if (bestCarrier) {
-            updateData.previousCarrierId = shipment.carrierId;
-            updateData.carrierId = bestCarrier.id;
-            carrierReassigned = true;
-            newCarrierInfo = bestCarrier;
-          }
-        }
-
-        updateData.agentNotes = `Critical delay (${Math.round(newDelay / 60)}hrs). Rerouted to ${nextWarehouse.name} with ${newCarrierInfo?.code || "best available"} carrier for priority delivery.`;
-
-        await createLog(
-          "warehouse_reroute",
-          "trigger_engine",
-          "critical",
-          `Case ${shipment.caseId}: Rerouted to warehouse ${nextWarehouse.code} due to ${Math.round(newDelay / 60)}hrs delay. Priority delivery activated.`,
-          {
-            caseId: shipment.caseId,
-            oldWarehouse: shipment.warehouse?.code,
-            newWarehouse: nextWarehouse.code,
-            newCarrier: newCarrierInfo?.code,
-          }
-        );
-
-        // fire email for warehouse reroute
-        await fireEmailWebhook({
-          trigger: "warehouse_reroute_10hrs",
-          caseId: shipment.caseId,
-          trackingId: shipment.trackingId,
-          consumerEmail: shipment.consumer?.email,
-          consumerName: shipment.consumer?.name,
-          totalDelay: newDelay,
-          newWarehouse: nextWarehouse.name,
-          message: `Your shipment ${shipment.trackingId} has been rerouted through ${nextWarehouse.name} for faster delivery. New estimated delivery has been updated.`,
-        });
-      }
-    }
-
-    // sla breach: auto-escalate and trigger email
-    if (slaBreached && !shipment.slaBreached) {
+  // ── threshold: 10hrs → reroute warehouse ──
+  if (newDelay >= 600 && shipment.delay < 600) {
+    const destRegion = shipment.destination?.region || "";
+    const nextWarehouse = await findNextWarehouse(shipment.warehouseId, destRegion);
+    if (nextWarehouse) {
+      updateData.nextWarehouseId = nextWarehouse.id;
+      updateData.warehouseId = nextWarehouse.id;
+      updateData.rerouted = true;
       updateData.escalated = true;
+      warehouseRerouted = true;
+      newWarehouseInfo = nextWarehouse;
+
+      // replace delayed warehouse in routeWaypoints
+      const waypoints: any[] = (shipment as any).routeWaypoints || [];
+      if (waypoints.length > 0) {
+        const oldCode = shipment.warehouse?.code;
+        const waypointIdx = waypoints.findIndex((wp: any) => wp.warehouseCode === oldCode);
+        if (waypointIdx !== -1) {
+          waypoints[waypointIdx] = {
+            ...waypoints[waypointIdx],
+            warehouseCode: nextWarehouse.code,
+            warehouseName: nextWarehouse.name,
+            city: nextWarehouse.location?.city || nextWarehouse.name,
+            region: nextWarehouse.location?.region || destRegion,
+            lat: nextWarehouse.location?.lat || waypoints[waypointIdx].lat,
+            lng: nextWarehouse.location?.lng || waypoints[waypointIdx].lng,
+            status: "rerouted",
+          };
+        } else {
+          const maxOrder = Math.max(...waypoints.map((wp: any) => wp.order), 0);
+          waypoints.push({
+            warehouseCode: nextWarehouse.code,
+            warehouseName: nextWarehouse.name,
+            city: nextWarehouse.location?.city || nextWarehouse.name,
+            region: nextWarehouse.location?.region || destRegion,
+            lat: nextWarehouse.location?.lat || 0,
+            lng: nextWarehouse.location?.lng || 0,
+            order: maxOrder + 1,
+            status: "rerouted",
+          });
+        }
+        updateData.routeWaypoints = waypoints;
+      }
+
+      // also reassign carrier if not already done
+      if (!carrierReassigned) {
+        const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
+        if (bestCarrier) {
+          updateData.previousCarrierId = shipment.carrierId;
+          updateData.carrierId = bestCarrier.id;
+          carrierReassigned = true;
+          newCarrierInfo = bestCarrier;
+        }
+      }
+
+      const routeStr = waypoints.sort((a: any, b: any) => a.order - b.order).map((wp: any) => wp.city).join(" -> ");
+      updateData.agentNotes = `Critical delay (${Math.round(newDelay / 60)}hrs). Rerouted via ${routeStr} with ${newCarrierInfo?.code || "best available"} carrier.`;
 
       await createLog(
-        "sla_breach",
-        "sla_monitor",
+        "warehouse_reroute",
+        "trigger_engine",
         "critical",
-        `Case ${shipment.caseId}: SLA BREACHED. Deadline was ${shipment.slaDeadline?.toISOString()}. Current ETA: ${newFinalEta?.toISOString()}`,
-        { caseId: shipment.caseId, slaDeadline: shipment.slaDeadline, newEta: newFinalEta }
+        `Case ${shipment.caseId}: Rerouted ${shipment.warehouse?.code} -> ${nextWarehouse.code}. ${Math.round(newDelay / 60)}hrs delay. Route: ${routeStr}`,
+        { caseId: shipment.caseId, oldWarehouse: shipment.warehouse?.code, newWarehouse: nextWarehouse.code }
       );
 
       await fireEmailWebhook({
-        trigger: "sla_breach",
+        trigger: "warehouse_reroute_10hrs",
         caseId: shipment.caseId,
         trackingId: shipment.trackingId,
         consumerEmail: shipment.consumer?.email,
         consumerName: shipment.consumer?.name,
-        slaDeadline: shipment.slaDeadline?.toISOString(),
-        estimatedDelivery: newFinalEta?.toISOString(),
-        message: `Your shipment ${shipment.trackingId} has missed its SLA deadline. Our team has been notified and is prioritizing resolution.`,
+        totalDelay: newDelay,
+        newWarehouse: nextWarehouse.name,
+        message: `Your shipment ${shipment.trackingId} has been rerouted through ${nextWarehouse.name} for faster delivery.`,
       });
     }
+  }
 
-    // explicit SLA_BREACH trigger
-    if (issueType === "SLA_BREACH") {
-      updateData.slaBreached = true;
-      updateData.escalated = true;
-      updateData.priority = "urgent" as any;
+  // sla breach auto-escalation
+  if (slaBreached && !shipment.slaBreached) {
+    updateData.escalated = true;
+    await createLog("sla_breach", "sla_monitor", "critical",
+      `Case ${shipment.caseId}: SLA BREACHED. Deadline: ${shipment.slaDeadline?.toISOString()}, ETA: ${newFinalEta?.toISOString()}`,
+      { caseId: shipment.caseId }
+    );
+    await fireEmailWebhook({
+      trigger: "sla_breach",
+      caseId: shipment.caseId,
+      trackingId: shipment.trackingId,
+      consumerEmail: shipment.consumer?.email,
+      consumerName: shipment.consumer?.name,
+      message: `Your shipment ${shipment.trackingId} has missed its SLA deadline. Our team has been notified.`,
+    });
+  }
 
-      if (!shipment.slaBreached) {
-        await fireEmailWebhook({
-          trigger: "sla_breach_manual",
-          caseId: shipment.caseId,
-          trackingId: shipment.trackingId,
-          consumerEmail: shipment.consumer?.email,
-          consumerName: shipment.consumer?.name,
-          message: `SLA breach declared for shipment ${shipment.trackingId}. Immediate action required.`,
+  const updated = await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: updateData,
+    include: {
+      carrier: { select: { id: true, name: true, code: true, reliabilityScore: true } },
+      warehouse: { select: { id: true, name: true, code: true, status: true } },
+      consumer: { select: { id: true, name: true, email: true } },
+    },
+  });
+
+  await createLog(
+    "trigger_delay",
+    "trigger_engine",
+    newDelay >= 360 ? "critical" : newDelay >= 120 ? "high" : "medium",
+    `Case ${shipment.caseId}: Delay +${DELAY_MINUTES}min (total: ${newDelay}min). Risk: ${newRisk}%`,
+    { caseId: shipment.caseId, delayAdded: DELAY_MINUTES, totalDelay: newDelay, riskScore: newRisk, carrierReassigned, emailTriggered, warehouseRerouted }
+  );
+
+  // create incident
+  await prisma.incident.create({
+    data: {
+      incidentId: incidentId(),
+      shipmentId: shipment.id,
+      type: "delay",
+      severity: (newDelay >= 360 ? "critical" : newDelay >= 240 ? "high" : "medium") as any,
+      status: "open",
+      title: `Case ${shipment.caseId}: DELAY +${Math.round(DELAY_MINUTES / 60)}HRS (total: ${Math.round(newDelay / 60)}hrs)`,
+      description: buildDescription(shipment, newDelay, carrierReassigned, warehouseRerouted),
+      riskScore: newRisk,
+      isEscalated: newRisk >= 70 || Boolean(slaBreached),
+      escalatedAt: newRisk >= 70 || slaBreached ? now : undefined,
+    },
+  });
+
+  // fire n8n webhook
+  const webhookPayload = buildWebhookPayload("delay", shipment, updated, {
+    delay: newDelay, riskScore: newRisk, slaBreached, newFinalEta,
+    carrierReassigned, newCarrierInfo, warehouseRerouted, newWarehouseInfo, emailTriggered,
+  });
+  const webhookResult = await fireWebhook(webhookPayload);
+
+  // log agent action
+  await prisma.agentAction.create({
+    data: {
+      actionId: `act-trigger-${Date.now().toString(36)}`,
+      actionType: "trigger_response",
+      targetType: "shipment",
+      targetId: shipment.id,
+      description: `Delay +${DELAY_MINUTES}min on Case ${shipment.caseId}. Total: ${newDelay}min.${carrierReassigned ? " Carrier reassigned." : ""}${emailTriggered ? " Email sent." : ""}${warehouseRerouted ? " Warehouse rerouted." : ""}`,
+      confidence: 0.9,
+      outcome: "executed",
+      requiredHuman: newRisk >= 80,
+      reasoning: buildReasoning(newDelay, carrierReassigned, warehouseRerouted, emailTriggered),
+      metadata: webhookPayload as any,
+    },
+  });
+
+  const route = routeSummary(updated);
+
+  return ApiResponse.success(res, {
+    trigger: "delay",
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    changes: {
+      delay: { previous: shipment.delay, added: DELAY_MINUTES, total: newDelay },
+      riskScore: { previous: shipment.riskScore, new: newRisk },
+      status: { previous: shipment.status, new: updated.status },
+      priority: { previous: shipment.priority, new: updated.priority },
+      finalEta: newFinalEta?.toISOString(),
+      slaBreached: slaBreached || false,
+    },
+    actions: {
+      carrierReassigned,
+      newCarrier: newCarrierInfo ? { code: newCarrierInfo.code, name: newCarrierInfo.name } : null,
+      warehouseRerouted,
+      newWarehouse: newWarehouseInfo ? { code: newWarehouseInfo.code, name: newWarehouseInfo.name } : null,
+      emailTriggered,
+    },
+    route,
+    routeWaypoints: (updated as any).routeWaypoints || [],
+    webhookResult,
+  });
+}
+
+// ─── SLA BREACH trigger ───
+async function handleSlaBreach(res: Response, shipment: any) {
+  const now = new Date();
+  const updateData: any = {
+    slaBreached: true,
+    escalated: true,
+    priority: "urgent" as any,
+    updatedAt: now,
+  };
+
+  if (!shipment.slaBreached) {
+    await fireEmailWebhook({
+      trigger: "sla_breach_manual",
+      caseId: shipment.caseId,
+      trackingId: shipment.trackingId,
+      consumerEmail: shipment.consumer?.email,
+      consumerName: shipment.consumer?.name,
+      message: `SLA breach declared for shipment ${shipment.trackingId}. Immediate action required.`,
+    });
+  }
+
+  if (shipment.carrierId) {
+    await degradeCarrierReliability(shipment.carrierId, 5, `SLA breach on case ${shipment.caseId}`);
+  }
+
+  const updated = await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: updateData,
+    include: {
+      carrier: { select: { id: true, name: true, code: true, reliabilityScore: true } },
+      warehouse: { select: { id: true, name: true, code: true, status: true } },
+      consumer: { select: { id: true, name: true, email: true } },
+    },
+  });
+
+  await createLog("trigger_sla_breach", "trigger_engine", "critical",
+    `Case ${shipment.caseId}: SLA breach declared. Priority set to urgent.`,
+    { caseId: shipment.caseId }
+  );
+
+  await prisma.incident.create({
+    data: {
+      incidentId: incidentId(),
+      shipmentId: shipment.id,
+      type: "sla_breach",
+      severity: "critical",
+      status: "open",
+      title: `Case ${shipment.caseId}: SLA BREACH`,
+      description: `SLA breach on shipment ${shipment.trackingId}. Auto-escalated to urgent priority.`,
+      riskScore: shipment.riskScore,
+      isEscalated: true,
+      escalatedAt: now,
+    },
+  });
+
+  const webhookPayload = buildWebhookPayload("SLA_BREACH", shipment, updated, {
+    delay: shipment.delay, riskScore: shipment.riskScore, slaBreached: true, newFinalEta: shipment.finalEta,
+    carrierReassigned: false, newCarrierInfo: null, warehouseRerouted: false, newWarehouseInfo: null, emailTriggered: true,
+  });
+  await fireWebhook(webhookPayload);
+
+  return ApiResponse.success(res, {
+    trigger: "SLA_BREACH",
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    changes: { slaBreached: true, escalated: true, priority: "urgent" },
+    route: routeSummary(updated),
+  });
+}
+
+// ─── SET IN TRANSIT trigger ───
+async function handleSetInTransit(res: Response, shipment: any) {
+  const now = new Date();
+
+  if (shipment.status === "delivered" || shipment.status === "cancelled") {
+    return ApiResponse.error(res, `Cannot set in_transit: shipment is ${shipment.status}`, 400);
+  }
+
+  const waypoints: any[] = (shipment as any).routeWaypoints || [];
+  // mark the first waypoint as departed
+  if (waypoints.length > 0) {
+    const firstPending = waypoints
+      .sort((a: any, b: any) => a.order - b.order)
+      .find((wp: any) => wp.status === "pending");
+    if (firstPending) {
+      firstPending.status = "in_transit";
+      firstPending.departedAt = now;
+    }
+  }
+
+  const updateData: any = {
+    status: "in_transit",
+    updatedAt: now,
+    routeWaypoints: waypoints,
+    agentNotes: `Shipment dispatched. In transit from ${shipment.origin?.city || "origin"}.`,
+  };
+
+  // if pending with no delay, boost carrier reliability slightly
+  if (shipment.status === "pending" && shipment.delay === 0 && shipment.carrierId) {
+    try {
+      const carrier = await prisma.carrier.findUnique({ where: { id: shipment.carrierId } });
+      if (carrier) {
+        await prisma.carrier.update({
+          where: { id: carrier.id },
+          data: { reliabilityScore: Math.min(100, carrier.reliabilityScore + 1) },
         });
       }
-    }
+    } catch { /* silent */ }
+  }
 
-    // update shipment
+  const updated = await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: updateData,
+    include: {
+      carrier: { select: { id: true, name: true, code: true, reliabilityScore: true } },
+      warehouse: { select: { id: true, name: true, code: true, status: true } },
+      consumer: { select: { id: true, name: true, email: true } },
+    },
+  });
+
+  await createLog("trigger_set_in_transit", "trigger_engine", "low",
+    `Case ${shipment.caseId}: Status changed ${shipment.status} -> in_transit. Shipment dispatched.`,
+    { caseId: shipment.caseId, previousStatus: shipment.status }
+  );
+
+  const webhookPayload = buildWebhookPayload("set_in_transit", shipment, updated, {
+    delay: shipment.delay, riskScore: shipment.riskScore, slaBreached: shipment.slaBreached, newFinalEta: shipment.finalEta,
+    carrierReassigned: false, newCarrierInfo: null, warehouseRerouted: false, newWarehouseInfo: null, emailTriggered: false,
+  });
+  await fireWebhook(webhookPayload);
+
+  return ApiResponse.success(res, {
+    trigger: "set_in_transit",
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    changes: { status: { previous: shipment.status, new: "in_transit" } },
+    route: routeSummary(updated),
+    routeWaypoints: waypoints,
+  });
+}
+
+// ─── ARRIVED AT WAREHOUSE trigger ───
+// advances to next waypoint warehouse. if delay is high, reassigns carrier
+async function handleArrivedWarehouse(res: Response, shipment: any) {
+  const now = new Date();
+
+  const waypoints: any[] = [...((shipment as any).routeWaypoints || [])].sort((a: any, b: any) => a.order - b.order);
+
+  if (waypoints.length === 0) {
+    return ApiResponse.error(res, "No waypoints defined for this shipment", 400);
+  }
+
+  // find the next pending/in_transit waypoint to mark as arrived
+  const currentWp = waypoints.find((wp: any) => wp.status === "pending" || wp.status === "in_transit");
+  if (!currentWp) {
+    // all waypoints completed, mark out_for_delivery
+    const updateData: any = {
+      status: "out_for_delivery",
+      updatedAt: now,
+      agentNotes: `All warehouse stops completed. Out for final delivery to ${shipment.destination?.city || "destination"}.`,
+    };
+
     const updated = await prisma.shipment.update({
       where: { id: shipment.id },
       data: updateData,
@@ -452,135 +701,124 @@ export const handleTrigger = async (req: Request, res: Response) => {
       },
     });
 
-    // create trigger log
-    await createLog(
-      `trigger_${issueType}`,
-      "trigger_engine",
-      severity,
-      `Case ${shipment.caseId}: ${issueType.replace(/_/g, " ")} triggered. Delay +${delayMinutes}min (total: ${newDelay}min). Risk: ${newRisk}%`,
-      {
-        caseId: shipment.caseId,
-        issue: issueType,
-        delayAdded: delayMinutes,
-        totalDelay: newDelay,
-        riskScore: newRisk,
-        carrierReassigned,
-        emailTriggered,
-        warehouseRerouted,
-        slaBreached: slaBreached || false,
-      }
+    await createLog("trigger_out_for_delivery", "trigger_engine", "low",
+      `Case ${shipment.caseId}: All waypoints completed. Out for delivery.`,
+      { caseId: shipment.caseId }
     );
 
-    // create incident record
-    if (issueType as string !== "resolve") {
-      const incidentType = mapIssueToIncidentType(issueType as IssueType) as any;
-      await prisma.incident.create({
-        data: {
-          incidentId: incidentId(),
-          shipmentId: shipment.id,
-          type: incidentType,
-          severity: (severity === "critical" ? "critical" : severity === "high" ? "high" : "medium") as any,
-          status: "open",
-          title: `Case ${shipment.caseId}: ${issueType.replace(/_/g, " ").toUpperCase()}`,
-          description: buildIncidentDescription(issueType as IssueType, shipment, newDelay, carrierReassigned, warehouseRerouted),
-          riskScore: newRisk,
-          isEscalated: newRisk >= 70 || Boolean(slaBreached),
-          escalatedAt: newRisk >= 70 || slaBreached ? now : undefined,
-        },
-      });
-    }
-
-    // fire n8n webhook with full context
-    const webhookPayload = {
-      trigger_type: issueType,
-      caseId: shipment.caseId,
-      trackingId: shipment.trackingId,
-      shipmentId: shipment.id,
-      consumer: shipment.consumer,
-      currentState: {
-        status: updated.status,
-        priority: updated.priority,
-        delay: newDelay,
-        riskScore: newRisk,
-        slaBreached: slaBreached || false,
-        rerouted: updated.rerouted,
-        escalated: updated.escalated,
-        carrier: updated.carrier,
-        warehouse: updated.warehouse,
-        finalEta: newFinalEta?.toISOString(),
-        value: shipment.value,
-      },
-      actions: {
-        carrierReassigned,
-        newCarrier: newCarrierInfo
-          ? { code: newCarrierInfo.code, name: newCarrierInfo.name, reliability: newCarrierInfo.reliabilityScore }
-          : null,
-        warehouseRerouted,
-        newWarehouse: newWarehouseInfo
-          ? { code: newWarehouseInfo.code, name: newWarehouseInfo.name }
-          : null,
-        emailTriggered,
-        slaBreachDetected: slaBreached && !shipment.slaBreached,
-      },
-      origin: shipment.origin,
-      destination: shipment.destination,
-      deliveryAddress: shipment.deliveryAddress,
-      recipientName: shipment.recipientName,
-      recipientPhone: shipment.recipientPhone,
-      timestamp: now.toISOString(),
-    };
-
-    const webhookResult = await fireWebhook(webhookPayload);
-
-    // log agent action
-    await prisma.agentAction.create({
-      data: {
-        actionId: `act-trigger-${Date.now().toString(36)}`,
-        actionType: "trigger_response",
-        targetType: "shipment",
-        targetId: shipment.id,
-        description: `Processed ${issueType} for Case ${shipment.caseId}. Delay: +${delayMinutes}min (total: ${newDelay}min)`,
-        confidence: 0.9,
-        outcome: "executed",
-        requiredHuman: newRisk >= 80,
-        reasoning: buildActionReasoning(issueType as IssueType, newDelay, carrierReassigned, warehouseRerouted, emailTriggered),
-        metadata: webhookPayload as any,
-      },
+    const webhookPayload = buildWebhookPayload("arrived_warehouse", shipment, updated, {
+      delay: shipment.delay, riskScore: shipment.riskScore, slaBreached: shipment.slaBreached, newFinalEta: shipment.finalEta,
+      carrierReassigned: false, newCarrierInfo: null, warehouseRerouted: false, newWarehouseInfo: null, emailTriggered: false,
     });
+    await fireWebhook(webhookPayload);
 
     return ApiResponse.success(res, {
-      trigger: issueType,
+      trigger: "arrived_warehouse",
       caseId: shipment.caseId,
       trackingId: shipment.trackingId,
-      changes: {
-        delay: { previous: shipment.delay, added: delayMinutes, total: newDelay },
-        riskScore: { previous: shipment.riskScore, new: newRisk },
-        status: { previous: shipment.status, new: updated.status },
-        priority: { previous: shipment.priority, new: updated.priority },
-        finalEta: newFinalEta?.toISOString(),
-        slaBreached: slaBreached || false,
-      },
-      actions: {
-        carrierReassigned,
-        newCarrier: newCarrierInfo
-          ? { code: newCarrierInfo.code, name: newCarrierInfo.name }
-          : null,
-        warehouseRerouted,
-        newWarehouse: newWarehouseInfo
-          ? { code: newWarehouseInfo.code, name: newWarehouseInfo.name }
-          : null,
-        emailTriggered,
-      },
-      webhookResult,
+      changes: { status: { previous: shipment.status, new: "out_for_delivery" } },
+      message: "All waypoints completed. Out for delivery.",
+      route: routeSummary(updated),
+      routeWaypoints: waypoints,
     });
-  } catch (error) {
-    console.error("[Trigger] Error:", error);
-    return ApiResponse.error(res, "Failed to process trigger", 500);
   }
-};
 
-// resolves all active issues for a shipment
-async function handleResolveTrigger(res: Response, shipment: any) {
+  // mark current waypoint as completed
+  currentWp.status = "completed";
+  currentWp.arrivedAt = now;
+
+  // find the warehouse by code to set as current warehouse
+  const warehouseRecord = await prisma.warehouse.findFirst({ where: { code: currentWp.warehouseCode } });
+
+  // find next waypoint
+  const nextWp = waypoints.find((wp: any) => wp.status === "pending" || wp.status === "in_transit");
+
+  let carrierReassigned = false;
+  let newCarrierInfo: any = null;
+  let newStatus = "at_warehouse";
+
+  // if delay is significant, swap carrier for the next leg
+  if (shipment.delay >= 120) {
+    const destRegion = shipment.destination?.region || "";
+    const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion, currentWp.region]);
+    if (bestCarrier && bestCarrier.id !== shipment.carrierId) {
+      carrierReassigned = true;
+      newCarrierInfo = bestCarrier;
+
+      if (shipment.carrierId) {
+        await degradeCarrierReliability(shipment.carrierId, 2, `swapped at ${currentWp.warehouseCode} due to delay`);
+      }
+
+      await createLog("carrier_reassigned", "trigger_engine", "high",
+        `Case ${shipment.caseId}: Carrier swapped ${shipment.carrier?.code} -> ${bestCarrier.code} at ${currentWp.warehouseCode} (delay: ${Math.round(shipment.delay / 60)}hrs)`,
+        { caseId: shipment.caseId, oldCarrier: shipment.carrier?.code, newCarrier: bestCarrier.code, warehouseCode: currentWp.warehouseCode }
+      );
+    }
+  }
+
+  if (nextWp) {
+    nextWp.status = "in_transit";
+    newStatus = "in_transit";
+  }
+
+  const updateData: any = {
+    status: newStatus,
+    routeWaypoints: waypoints,
+    updatedAt: now,
+    ...(warehouseRecord ? { warehouseId: warehouseRecord.id } : {}),
+    ...(carrierReassigned && newCarrierInfo ? {
+      previousCarrierId: shipment.carrierId,
+      carrierId: newCarrierInfo.id,
+    } : {}),
+    currentLocation: {
+      lat: currentWp.lat,
+      lng: currentWp.lng,
+      address: currentWp.warehouseName,
+      city: currentWp.city,
+      region: currentWp.region,
+    },
+    agentNotes: `Arrived at ${currentWp.warehouseName} (${currentWp.city}).${nextWp ? ` Next: ${nextWp.warehouseName}.` : " Final stop before delivery."}${carrierReassigned ? ` Carrier swapped to ${newCarrierInfo?.code}.` : ""}`,
+  };
+
+  const updated = await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: updateData,
+    include: {
+      carrier: { select: { id: true, name: true, code: true, reliabilityScore: true } },
+      warehouse: { select: { id: true, name: true, code: true, status: true } },
+      consumer: { select: { id: true, name: true, email: true } },
+    },
+  });
+
+  await createLog("trigger_arrived_warehouse", "trigger_engine", "low",
+    `Case ${shipment.caseId}: Arrived at ${currentWp.warehouseCode} (${currentWp.city}).${nextWp ? ` Next stop: ${nextWp.warehouseCode}.` : " All stops completed."}${carrierReassigned ? ` Carrier -> ${newCarrierInfo?.code}.` : ""}`,
+    { caseId: shipment.caseId, warehouse: currentWp.warehouseCode, nextWarehouse: nextWp?.warehouseCode, carrierReassigned }
+  );
+
+  const webhookPayload = buildWebhookPayload("arrived_warehouse", shipment, updated, {
+    delay: shipment.delay, riskScore: shipment.riskScore, slaBreached: shipment.slaBreached, newFinalEta: shipment.finalEta,
+    carrierReassigned, newCarrierInfo, warehouseRerouted: false, newWarehouseInfo: null, emailTriggered: false,
+  });
+  await fireWebhook(webhookPayload);
+
+  return ApiResponse.success(res, {
+    trigger: "arrived_warehouse",
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    arrivedAt: { code: currentWp.warehouseCode, city: currentWp.city },
+    nextStop: nextWp ? { code: nextWp.warehouseCode, city: nextWp.city } : null,
+    changes: {
+      status: { previous: shipment.status, new: newStatus },
+      carrierReassigned,
+      newCarrier: newCarrierInfo ? { code: newCarrierInfo.code, name: newCarrierInfo.name } : null,
+    },
+    route: routeSummary(updated),
+    routeWaypoints: waypoints,
+  });
+}
+
+// ─── RESOLVE trigger ───
+async function handleResolve(res: Response, shipment: any) {
   const now = new Date();
 
   const updateData: any = {
@@ -604,16 +842,12 @@ async function handleResolveTrigger(res: Response, shipment: any) {
     },
   });
 
-  // resolve open incidents
   await prisma.incident.updateMany({
     where: { shipmentId: shipment.id, status: { in: ["open", "investigating", "in_progress", "escalated"] } },
     data: { status: "resolved", resolution: "Auto-resolved via trigger", updatedAt: now },
   });
 
-  await createLog(
-    "trigger_resolve",
-    "trigger_engine",
-    "low",
+  await createLog("trigger_resolve", "trigger_engine", "low",
     `Case ${shipment.caseId}: All issues resolved. Delay reset, risk cleared, ETA restored.`,
     { caseId: shipment.caseId }
   );
@@ -623,12 +857,7 @@ async function handleResolveTrigger(res: Response, shipment: any) {
     caseId: shipment.caseId,
     trackingId: shipment.trackingId,
     shipmentId: shipment.id,
-    currentState: {
-      status: updated.status,
-      delay: 0,
-      riskScore: 0,
-      slaBreached: false,
-    },
+    currentState: { status: updated.status, delay: 0, riskScore: 0, slaBreached: false },
     timestamp: now.toISOString(),
   });
 
@@ -637,47 +866,228 @@ async function handleResolveTrigger(res: Response, shipment: any) {
     caseId: shipment.caseId,
     trackingId: shipment.trackingId,
     message: "All issues resolved",
+    route: routeSummary(updated),
     webhookResult,
   });
 }
 
-// get all available triggers info
+// ─── RESET DEMO trigger ───
+// resets a shipment to pristine seed state
+async function handleResetDemo(res: Response, shipment: any) {
+  const now = new Date();
+
+  // original seed waypoints per case
+  const SEED_WAYPOINTS: Record<number, any[]> = {
+    1: [
+      { warehouseCode: "DEL-N1", warehouseName: "Delhi North Hub", city: "Delhi NCR", region: "north", lat: 28.6139, lng: 77.209, order: 1, status: "pending" },
+      { warehouseCode: "HYD-S2", warehouseName: "Hyderabad South Hub", city: "Hyderabad", region: "south", lat: 17.385, lng: 78.4867, order: 2, status: "pending" },
+      { warehouseCode: "MUM-W1", warehouseName: "Mumbai Central Hub", city: "Mumbai", region: "west", lat: 19.076, lng: 72.8777, order: 3, status: "pending" },
+    ],
+    2: [
+      { warehouseCode: "MUM-W1", warehouseName: "Mumbai Central Hub", city: "Mumbai", region: "west", lat: 19.076, lng: 72.8777, order: 1, status: "pending" },
+      { warehouseCode: "HYD-S2", warehouseName: "Hyderabad South Hub", city: "Hyderabad", region: "south", lat: 17.385, lng: 78.4867, order: 2, status: "pending" },
+      { warehouseCode: "BLR-S1", warehouseName: "Bangalore South Hub", city: "Bangalore", region: "south", lat: 12.9716, lng: 77.5946, order: 3, status: "pending" },
+    ],
+    3: [
+      { warehouseCode: "KOL-E1", warehouseName: "Kolkata East Hub", city: "Kolkata", region: "east", lat: 22.5726, lng: 88.3639, order: 1, status: "pending" },
+      { warehouseCode: "HYD-S2", warehouseName: "Hyderabad South Hub", city: "Hyderabad", region: "south", lat: 17.385, lng: 78.4867, order: 2, status: "pending" },
+      { warehouseCode: "DEL-N1", warehouseName: "Delhi North Hub", city: "Delhi NCR", region: "north", lat: 28.6139, lng: 77.209, order: 3, status: "pending" },
+    ],
+  };
+
+  // original carrier codes
+  const SEED_CARRIER_CODES: Record<number, string> = { 1: "DXP", 2: "BFX", 3: "SFX" };
+  // original warehouse codes
+  const SEED_WAREHOUSE_CODES: Record<number, string> = { 1: "DEL-N1", 2: "MUM-W1", 3: "KOL-E1" };
+
+  const caseId = shipment.caseId;
+
+  // look up original carrier & warehouse
+  const originalCarrier = await prisma.carrier.findFirst({ where: { code: SEED_CARRIER_CODES[caseId] || "DXP" } });
+  const originalWarehouse = await prisma.warehouse.findFirst({ where: { code: SEED_WAREHOUSE_CODES[caseId] || "DEL-N1" } });
+
+  const hoursFromNow = (h: number) => new Date(Date.now() + h * 60 * 60 * 1000);
+  const etaHours: Record<number, number> = { 1: 36, 2: 28, 3: 52 };
+  const slaHours: Record<number, number> = { 1: 48, 2: 36, 3: 72 };
+
+  const updateData: any = {
+    status: "pending",
+    priority: caseId === 2 ? "urgent" : caseId === 1 ? "high" : "medium",
+    delay: 0,
+    riskScore: 0,
+    slaBreached: false,
+    rerouted: false,
+    escalated: false,
+    initialEta: hoursFromNow(etaHours[caseId] || 36),
+    finalEta: hoursFromNow(etaHours[caseId] || 36),
+    estimatedDelivery: hoursFromNow(etaHours[caseId] || 36),
+    actualDelivery: null,
+    slaDeadline: hoursFromNow(slaHours[caseId] || 48),
+    currentLocation: null,
+    previousCarrierId: null,
+    nextWarehouseId: null,
+    agentNotes: null,
+    routeHistory: [],
+    routeWaypoints: SEED_WAYPOINTS[caseId] || SEED_WAYPOINTS[1],
+    updatedAt: now,
+    ...(originalCarrier ? { carrierId: originalCarrier.id } : {}),
+    ...(originalWarehouse ? { warehouseId: originalWarehouse.id } : {}),
+  };
+
+  const updated = await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: updateData,
+    include: {
+      carrier: { select: { id: true, name: true, code: true } },
+      warehouse: { select: { id: true, name: true, code: true } },
+    },
+  });
+
+  // resolve all open incidents
+  await prisma.incident.updateMany({
+    where: { shipmentId: shipment.id, status: { in: ["open", "investigating", "in_progress", "escalated"] } },
+    data: { status: "resolved", resolution: "Reset to demo state", updatedAt: now },
+  });
+
+  // reset carrier reliability scores to seed defaults
+  const carrierDefaults: Record<string, { reliabilityScore: number; failureRate: number }> = {
+    DXP: { reliabilityScore: 92, failureRate: 1.5 },
+    BFX: { reliabilityScore: 88, failureRate: 2.1 },
+    EKL: { reliabilityScore: 78, failureRate: 4.5 },
+    SFX: { reliabilityScore: 85, failureRate: 2.8 },
+    XBS: { reliabilityScore: 90, failureRate: 1.8 },
+  };
+  for (const [code, vals] of Object.entries(carrierDefaults)) {
+    await prisma.carrier.updateMany({
+      where: { code },
+      data: { reliabilityScore: vals.reliabilityScore, failureRate: vals.failureRate, lastIncident: null },
+    });
+  }
+
+  await createLog("trigger_reset_demo", "trigger_engine", "low",
+    `Case ${shipment.caseId}: Reset to demo default state. All delays/incidents cleared, carriers restored.`,
+    { caseId: shipment.caseId }
+  );
+
+  const webhookResult = await fireWebhook({
+    trigger_type: "reset_demo",
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    shipmentId: shipment.id,
+    currentState: { status: "pending", delay: 0, riskScore: 0, slaBreached: false },
+    timestamp: now.toISOString(),
+  });
+
+  return ApiResponse.success(res, {
+    trigger: "reset_demo",
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    message: `Case ${caseId} reset to default demo state`,
+    route: routeSummary(updated),
+    routeWaypoints: updateData.routeWaypoints,
+    webhookResult,
+  });
+}
+
+// ─── shared helpers ───
+
+function buildWebhookPayload(triggerType: string, shipment: any, updated: any, ctx: any) {
+  return {
+    trigger_type: triggerType,
+    caseId: shipment.caseId,
+    trackingId: shipment.trackingId,
+    shipmentId: shipment.id,
+    consumer: shipment.consumer,
+    currentState: {
+      status: updated.status,
+      priority: updated.priority,
+      delay: ctx.delay,
+      riskScore: ctx.riskScore,
+      slaBreached: ctx.slaBreached || false,
+      rerouted: updated.rerouted,
+      escalated: updated.escalated,
+      carrier: updated.carrier,
+      warehouse: updated.warehouse,
+      finalEta: ctx.newFinalEta instanceof Date ? ctx.newFinalEta.toISOString() : ctx.newFinalEta,
+      value: shipment.value,
+    },
+    actions: {
+      carrierReassigned: ctx.carrierReassigned,
+      newCarrier: ctx.newCarrierInfo
+        ? { code: ctx.newCarrierInfo.code, name: ctx.newCarrierInfo.name, reliability: ctx.newCarrierInfo.reliabilityScore }
+        : null,
+      warehouseRerouted: ctx.warehouseRerouted,
+      newWarehouse: ctx.newWarehouseInfo
+        ? { code: ctx.newWarehouseInfo.code, name: ctx.newWarehouseInfo.name }
+        : null,
+      emailTriggered: ctx.emailTriggered,
+      slaBreachDetected: ctx.slaBreached && !shipment.slaBreached,
+    },
+    origin: shipment.origin,
+    destination: shipment.destination,
+    routeWaypoints: (updated as any).routeWaypoints || (shipment as any).routeWaypoints || [],
+    route: routeSummary(updated),
+    deliveryAddress: shipment.deliveryAddress,
+    recipientName: shipment.recipientName,
+    recipientPhone: shipment.recipientPhone,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildDescription(shipment: any, totalDelay: number, carrierReassigned: boolean, warehouseRerouted: boolean): string {
+  const route = routeSummary(shipment);
+  const parts = [
+    `Delay: ${totalDelay}min (${(totalDelay / 60).toFixed(1)}hrs)`,
+    `Risk: ${Math.min(100, shipment.riskScore + DELAY_RISK_DELTA)}%`,
+    `Route: ${route.join(" -> ")}`,
+    `Carrier: ${shipment.carrier?.code || "unassigned"}`,
+    `Value: INR ${shipment.value?.toLocaleString("en-IN") || "0"}`,
+  ];
+  if (carrierReassigned) parts.push("Carrier reassigned");
+  if (warehouseRerouted) parts.push("Warehouse rerouted");
+  if (totalDelay >= 120) parts.push("Email sent to consumer");
+  return parts.join(". ");
+}
+
+function buildReasoning(totalDelay: number, carrierReassigned: boolean, warehouseRerouted: boolean, emailTriggered: boolean): string {
+  const parts = ["Trigger: delay +2hrs"];
+  if (totalDelay >= 600 && warehouseRerouted) {
+    parts.push(`Delay exceeded 10hrs (${(totalDelay / 60).toFixed(1)}hrs). Rerouted to alternate warehouse.`);
+  } else if (totalDelay >= 360) {
+    parts.push(`Delay exceeded 6hrs (${(totalDelay / 60).toFixed(1)}hrs). Follow-up email sent.`);
+  } else if (totalDelay >= 120 && carrierReassigned) {
+    parts.push(`Delay reached 2hrs. Carrier reassigned, email sent to consumer.`);
+  }
+  if (carrierReassigned && !warehouseRerouted) {
+    parts.push("Carrier selected by reliability score and regional coverage.");
+  }
+  return parts.join(" ");
+}
+
+// ─── info & history endpoints ───
+
 export const getTriggerInfo = async (_req: Request, res: Response) => {
   return ApiResponse.success(res, {
     triggers: VALID_ISSUES.map((issue) => ({
       id: issue,
       label: issue.replace(/_/g, " "),
-      delayMinutes: ISSUE_DELAY_MAP[issue] || 0,
-      riskImpact: ISSUE_RISK_MAP[issue] || 0,
-      severity: ISSUE_SEVERITY_MAP[issue] || "medium",
     })),
     thresholds: {
-      late_pickup_reassign_minutes: 120,
-      email_notification_minutes: 360,
+      delay_per_press_minutes: DELAY_MINUTES,
+      carrier_reassign_minutes: 120,
+      email_notification_minutes: 120,
+      followup_email_minutes: 360,
       warehouse_reroute_minutes: 600,
       sla_breach_auto_escalate: true,
     },
   });
 };
 
-// get trigger history for a shipment
 export const getTriggerHistory = async (req: Request, res: Response) => {
   try {
     const { shipmentId } = req.params;
 
-    let caseId: number | undefined;
-    const parsed = parseInt(shipmentId as string);
-    if (!isNaN(parsed) && parsed >= 1 && parsed <= 3) {
-      caseId = parsed;
-    }
-
-    let shipment;
-    if (caseId) {
-      shipment = await prisma.shipment.findUnique({ where: { caseId: caseId as number } });
-    } else {
-      shipment = await prisma.shipment.findUnique({ where: { id: shipmentId as string } });
-    }
-
+    const shipment = await findShipment(shipmentId);
     if (!shipment) {
       return ApiResponse.notFound(res, "Shipment not found");
     }
@@ -707,6 +1117,7 @@ export const getTriggerHistory = async (req: Request, res: Response) => {
         rerouted: shipment.rerouted,
         escalated: shipment.escalated,
       },
+      route: routeSummary(shipment),
       triggerLogs: logs.map((l) => ({
         id: l.logId,
         timestamp: l.timestamp,
@@ -731,71 +1142,53 @@ export const getTriggerHistory = async (req: Request, res: Response) => {
   }
 };
 
-// maps issue type to incident model enum
-function mapIssueToIncidentType(issue: IssueType): string {
-  const map: Record<string, string> = {
-    warehouse_congestion: "warehouse_congestion",
-    carrier_breakdown: "carrier_failure",
-    late_pickup: "delay",
-    weather_disruption: "weather_disruption",
-    customs_hold: "customs_hold",
-    inaccurate_ETA: "eta_deviation",
-    SLA_BREACH: "sla_breach",
-  };
-  return map[issue] || "delay";
-}
+// ─── carrier reliability update endpoint ───
+export const updateCarrierReliability = async (req: Request, res: Response) => {
+  try {
+    const { carrierCode } = req.params;
+    const { reliabilityScore, failureRate, reason } = req.body;
 
-// builds incident description
-function buildIncidentDescription(
-  issue: IssueType,
-  shipment: any,
-  totalDelay: number,
-  carrierReassigned: boolean,
-  warehouseRerouted: boolean
-): string {
-  const parts = [
-    `Issue: ${issue.replace(/_/g, " ")}`,
-    `Total delay: ${totalDelay} minutes (${(totalDelay / 60).toFixed(1)}hrs)`,
-    `Risk score: ${Math.min(100, shipment.riskScore + (ISSUE_RISK_MAP[issue] || 0))}%`,
-    `Route: ${shipment.origin?.city || "?"} -> ${shipment.destination?.city || "?"}`,
-    `Carrier: ${shipment.carrier?.code || "unassigned"}`,
-    `Value: INR ${shipment.value?.toLocaleString("en-IN") || "0"}`,
-  ];
+    const carrier = await prisma.carrier.findFirst({ where: { code: carrierCode } });
+    if (!carrier) {
+      return ApiResponse.notFound(res, "Carrier not found");
+    }
 
-  if (carrierReassigned) parts.push("Action: Carrier reassigned automatically");
-  if (warehouseRerouted) parts.push("Action: Rerouted to alternate warehouse");
-  if (totalDelay >= 360) parts.push("Alert: Email notification sent to consumer");
+    const updateData: any = {};
+    if (reliabilityScore !== undefined) {
+      updateData.reliabilityScore = Math.max(0, Math.min(100, reliabilityScore));
+    }
+    if (failureRate !== undefined) {
+      updateData.failureRate = Math.max(0, Math.min(100, failureRate));
+    }
 
-  return parts.join(". ");
-}
+    if (Object.keys(updateData).length === 0) {
+      return ApiResponse.error(res, "Provide reliabilityScore or failureRate", 400);
+    }
 
-// builds action reasoning text
-function buildActionReasoning(
-  issue: IssueType,
-  totalDelay: number,
-  carrierReassigned: boolean,
-  warehouseRerouted: boolean,
-  emailTriggered: boolean
-): string {
-  const parts = [`Trigger: ${issue.replace(/_/g, " ")}`];
+    const updated = await prisma.carrier.update({
+      where: { id: carrier.id },
+      data: updateData,
+    });
 
-  if (totalDelay >= 600 && warehouseRerouted) {
-    parts.push(
-      `Delay exceeded 10hrs threshold (${(totalDelay / 60).toFixed(1)}hrs). Rerouted to nearest available warehouse with lower congestion.`
+    await createLog("carrier_reliability_manual_update", "admin_panel", "medium",
+      `Carrier ${carrier.code}: reliability updated to ${updated.reliabilityScore}%${reason ? ` (${reason})` : ""}`,
+      { carrierCode: carrier.code, oldScore: carrier.reliabilityScore, newScore: updated.reliabilityScore, reason }
     );
-  } else if (totalDelay >= 360 && emailTriggered) {
-    parts.push(
-      `Delay exceeded 6hrs threshold (${(totalDelay / 60).toFixed(1)}hrs). Consumer notification email triggered.`
-    );
-  } else if (totalDelay >= 120 && carrierReassigned) {
-    parts.push(
-      `Delay exceeded 2hrs threshold (${(totalDelay / 60).toFixed(1)}hrs). Carrier reassigned to best available option.`
-    );
+
+    return ApiResponse.success(res, {
+      carrier: {
+        code: updated.code,
+        name: updated.name,
+        reliabilityScore: updated.reliabilityScore,
+        failureRate: updated.failureRate,
+      },
+      previous: {
+        reliabilityScore: carrier.reliabilityScore,
+        failureRate: carrier.failureRate,
+      },
+    });
+  } catch (error) {
+    console.error("[Trigger] Carrier reliability update error:", error);
+    return ApiResponse.error(res, "Failed to update carrier reliability", 500);
   }
-
-  if (carrierReassigned && !warehouseRerouted) {
-    parts.push("Carrier selection based on reliability score and regional coverage.");
-  }
-
-  return parts.join(" ");
-}
+};

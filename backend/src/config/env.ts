@@ -38,10 +38,10 @@ export const config: Config = {
     origin: process.env.CORS_ORIGIN || "*",
   },
   webhook: {
-    agentUrl: process.env.WEBHOOK_AGENT_URL || "https://abstruse.app.n8n.cloud/webhook/agent",
-    shipmentUpdateUrl: process.env.WEBHOOK_SHIPMENT_UPDATE_URL || "https://abstruse.app.n8n.cloud/webhook/shipment-update",
-    incidentUrl: process.env.WEBHOOK_INCIDENT_URL || "https://abstruse.app.n8n.cloud/webhook/incident",
-    resolveIncidentUrl: process.env.WEBHOOK_RESOLVE_INCIDENT_URL || "https://abstruse.app.n8n.cloud/webhook/resolve-incident",
+    agentUrl: process.env.WEBHOOK_AGENT_URL || "https://mihirj.app.n8n.cloud/webhook/logistics-agent",
+    shipmentUpdateUrl: process.env.WEBHOOK_SHIPMENT_UPDATE_URL || "https://mihirj.app.n8n.cloud/webhook/logistics-agent",
+    incidentUrl: process.env.WEBHOOK_INCIDENT_URL || "https://mihirj.app.n8n.cloud/webhook/logistics-agent",
+    resolveIncidentUrl: process.env.WEBHOOK_RESOLVE_INCIDENT_URL || "https://mihirj.app.n8n.cloud/webhook/logistics-agent",
   },
   pusher: {
     appId: process.env.PUSHER_APP_ID || "",

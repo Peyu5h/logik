@@ -7,13 +7,13 @@ import {
   Zap,
   Loader2,
   Truck,
-  Package,
   RefreshCw,
-  CloudRain,
-  FileWarning,
   AlertOctagon,
   CheckCircle2,
-  AlertTriangle,
+  ArrowRight,
+  Play,
+  Warehouse,
+  RotateCcw,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
@@ -24,6 +24,15 @@ import useUser from "~/hooks/useUser";
 import type { SystemLog } from "~/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+
+interface RouteWaypoint {
+  warehouseCode: string;
+  warehouseName: string;
+  city: string;
+  region: string;
+  order: number;
+  status: string;
+}
 
 interface ShipmentState {
   _id: string;
@@ -44,6 +53,8 @@ interface ShipmentState {
   warehouse: { code: string; name: string; status: string } | null;
   origin: { city?: string } | null;
   destination: { city?: string } | null;
+  routeWaypoints?: RouteWaypoint[];
+  route?: string[];
   agentNotes: string | null;
   updatedAt: string;
 }
@@ -59,57 +70,33 @@ interface TriggerCard {
 
 const TRIGGER_CARDS: TriggerCard[] = [
   {
-    id: "late-pickup",
-    title: "Late Pickup (+2hrs)",
-    description: "Carrier hasn't picked up. Adds 2hr delay. Auto-reassigns carrier if pending.",
+    id: "delay",
+    title: "Delay +2hrs",
+    description: "Adds 2hr delay. Auto-reassigns carrier at 2hrs, emails consumer, reroutes warehouse at 10hrs.",
     icon: <Clock className="h-4 w-4" />,
+    severity: "high",
+    issue: "delay",
+  },
+  {
+    id: "set-in-transit",
+    title: "Set In Transit",
+    description: "Dispatch shipment. Marks first waypoint as in transit.",
+    icon: <Play className="h-4 w-4" />,
+    severity: "low",
+    issue: "set_in_transit",
+  },
+  {
+    id: "arrived-warehouse",
+    title: "Arrived at Warehouse",
+    description: "Advance to next waypoint. Swaps carrier if delay is high.",
+    icon: <Warehouse className="h-4 w-4" />,
     severity: "medium",
-    issue: "late_pickup",
-  },
-  {
-    id: "carrier-breakdown",
-    title: "Carrier Breakdown",
-    description: "Vehicle breakdown. Adds 4hr delay. Emergency carrier reassignment.",
-    icon: <Truck className="h-4 w-4" />,
-    severity: "critical",
-    issue: "carrier_breakdown",
-  },
-  {
-    id: "warehouse-congestion",
-    title: "Warehouse Congestion",
-    description: "Hub congestion. Adds 3hr delay. Processing time elevated.",
-    icon: <Package className="h-4 w-4" />,
-    severity: "high",
-    issue: "warehouse_congestion",
-  },
-  {
-    id: "weather-disruption",
-    title: "Weather Disruption",
-    description: "Severe weather on route. Adds 5hr delay.",
-    icon: <CloudRain className="h-4 w-4" />,
-    severity: "high",
-    issue: "weather_disruption",
-  },
-  {
-    id: "customs-hold",
-    title: "Customs Hold",
-    description: "Shipment held at customs. Adds 6hr delay.",
-    icon: <FileWarning className="h-4 w-4" />,
-    severity: "high",
-    issue: "customs_hold",
-  },
-  {
-    id: "inaccurate-eta",
-    title: "Inaccurate ETA",
-    description: "ETA calculation off. Adds 1.5hr correction delay.",
-    icon: <AlertTriangle className="h-4 w-4" />,
-    severity: "medium",
-    issue: "inaccurate_ETA",
+    issue: "arrived_warehouse",
   },
   {
     id: "sla-breach",
     title: "SLA Breach",
-    description: "Force SLA breach. Auto-escalates and sends email notification.",
+    description: "Force SLA breach. Auto-escalates and sends notification.",
     icon: <AlertOctagon className="h-4 w-4" />,
     severity: "critical",
     issue: "SLA_BREACH",
@@ -117,10 +104,18 @@ const TRIGGER_CARDS: TriggerCard[] = [
   {
     id: "resolve",
     title: "Resolve All Issues",
-    description: "Clear all delays, reset risk, resolve incidents. Restore initial ETA.",
+    description: "Clear all delays, reset risk, resolve incidents.",
     icon: <CheckCircle2 className="h-4 w-4" />,
     severity: "low",
     issue: "resolve",
+  },
+  {
+    id: "reset-demo",
+    title: "Reset Demo",
+    description: "Reset shipment to pristine seed state. Restores carriers and waypoints.",
+    icon: <RotateCcw className="h-4 w-4" />,
+    severity: "low",
+    issue: "reset_demo",
   },
 ];
 
@@ -150,6 +145,52 @@ function formatDelayHrs(minutes: number): string {
   if (hrs === 0) return `${mins}m`;
   if (mins === 0) return `${hrs}h`;
   return `${hrs}h ${mins}m`;
+}
+
+// renders the multi-hop route as city -> city -> city
+function RouteDisplay({ shipment }: { shipment: ShipmentState }) {
+  const route = shipment.route;
+  if (route && route.length > 0) {
+    return (
+      <div className="flex items-center gap-0.5 flex-wrap">
+        {route.map((city, i) => (
+          <span key={i} className="flex items-center gap-0.5">
+            <span className="text-[9px] whitespace-nowrap">{city}</span>
+            {i < route.length - 1 && (
+              <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+            )}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  // fallback to origin -> waypoints -> destination
+  const waypoints = shipment.routeWaypoints || [];
+  const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+  const cities: string[] = [];
+  if (shipment.origin?.city) cities.push(shipment.origin.city);
+  for (const wp of sorted) {
+    if (wp.city && !cities.includes(wp.city)) cities.push(wp.city);
+  }
+  if (shipment.destination?.city && !cities.includes(shipment.destination.city)) {
+    cities.push(shipment.destination.city);
+  }
+
+  if (cities.length === 0) return <span className="text-[9px]">No route</span>;
+
+  return (
+    <div className="flex items-center gap-0.5 flex-wrap">
+      {cities.map((city, i) => (
+        <span key={i} className="flex items-center gap-0.5">
+          <span className="text-[9px] whitespace-nowrap">{city}</span>
+          {i < cities.length - 1 && (
+            <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+          )}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 export default function LogsPage() {
@@ -351,17 +392,17 @@ export default function LogsPage() {
   };
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full min-h-0 overflow-hidden">
       {/* center: logs panel */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="shrink-0 flex items-center justify-between border-b px-6 py-4">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-lg font-semibold">System Logs</h1>
-            <p className="text-muted-foreground text-sm">
+            <p className="text-muted-foreground text-sm truncate">
               Event logs and trigger testing for Case {selectedCaseId}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <Button
               variant="outline"
               size="sm"
@@ -384,13 +425,13 @@ export default function LogsPage() {
 
         {/* table header */}
         <div className="shrink-0 flex items-center gap-2 border-b px-4 py-2 font-mono text-[10px] tracking-wide uppercase text-muted-foreground">
-          <span className="w-36">Timestamp</span>
-          <span className="w-44">Event</span>
-          <span className="flex-1">Details</span>
+          <span className="w-36 shrink-0">Timestamp</span>
+          <span className="w-44 shrink-0">Event</span>
+          <span className="min-w-0 flex-1">Details</span>
         </div>
 
         {/* logs list */}
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           {isLoadingLogs && mergedLogs.length === 0 ? (
             <div className="flex flex-col gap-1 p-4">
               {[1, 2, 3, 4, 5, 6].map((i) => (
@@ -429,14 +470,14 @@ export default function LogsPage() {
                   </span>
                   <span
                     className={cn(
-                      "w-44 shrink-0 text-[11px] font-medium uppercase",
+                      "w-44 shrink-0 text-[11px] font-medium uppercase truncate",
                       SEVERITY_COLORS[log.severity] ||
                         "text-muted-foreground"
                     )}
                   >
                     {log.event_type.replace(/_/g, " ")}
                   </span>
-                  <span className="min-w-0 flex-1 text-[11px]">
+                  <span className="min-w-0 flex-1 text-[11px] break-words">
                     <span className="text-cyan-600 dark:text-cyan-400">
                       [{log.source}]
                     </span>{" "}
@@ -467,26 +508,23 @@ export default function LogsPage() {
       </div>
 
       {/* right: trigger cards panel */}
-      <div className="hidden w-80 border-l xl:flex flex-col overflow-hidden">
+      <div className="hidden w-80 shrink-0 border-l lg:flex flex-col overflow-hidden">
         <div className="shrink-0 border-b px-4 py-3">
           <div className="flex items-center gap-2">
             <Zap className="h-4 w-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">Triggers</h2>
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground truncate">
             Fire events on Case {selectedCaseId}
-            {selectedShipment
-              ? ` (${selectedShipment.origin?.city || "?"} → ${selectedShipment.destination?.city || "?"})`
-              : ""}
           </p>
         </div>
 
         {/* case selector */}
-        <div className="shrink-0 border-b px-4 py-3">
+        <div className="shrink-0 border-b px-4 py-3 overflow-hidden">
           <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mb-2">
             Select Case
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-stretch gap-1.5">
             {[1, 2, 3].map((cid) => {
               const s = demoShipments.find((sh) => sh.caseId === cid);
               const isActive = selectedCaseId === cid;
@@ -495,58 +533,96 @@ export default function LogsPage() {
                   key={cid}
                   onClick={() => setSelectedCaseId(cid)}
                   className={cn(
-                    "flex-1 rounded-md border px-2 py-2 text-center transition-colors",
+                    "flex-1 min-w-0 rounded-md border px-1.5 py-2 text-center transition-colors overflow-hidden",
                     isActive
                       ? "border-primary bg-primary/10 text-primary"
                       : "border-border hover:bg-muted/50 text-muted-foreground"
                   )}
                 >
-                  <p className="text-[10px] font-bold">Case {cid}</p>
+                  <p className="text-[10px] font-bold truncate">Case {cid}</p>
                   {s ? (
-                    <p className="text-[9px] mt-0.5 truncate">
+                    <p className="text-[8px] mt-0.5 truncate">
                       {s.origin?.city || "?"} → {s.destination?.city || "?"}
                     </p>
                   ) : (
-                    <p className="text-[9px] mt-0.5">Loading...</p>
+                    <p className="text-[8px] mt-0.5">Loading...</p>
                   )}
                 </button>
               );
             })}
           </div>
 
+          {/* multi-route display */}
           {selectedShipment && (
-            <div className="mt-2 flex items-center gap-2 flex-wrap text-[10px]">
-              <span className="capitalize text-muted-foreground">
-                {selectedShipment.status.replace(/_/g, " ")}
-              </span>
-              {selectedShipment.delay > 0 && (
-                <span className="text-red-500 font-medium">
-                  +{formatDelayHrs(selectedShipment.delay)}
+            <div className="mt-2 space-y-1.5 overflow-hidden">
+              <RouteDisplay shipment={selectedShipment} />
+              <div className="flex items-center gap-2 flex-wrap text-[10px]">
+                <span className="capitalize text-muted-foreground">
+                  {selectedShipment.status.replace(/_/g, " ")}
                 </span>
-              )}
-              {selectedShipment.slaBreached && (
-                <span className="text-red-600 font-semibold">SLA!</span>
-              )}
-              {selectedShipment.rerouted && (
-                <span className="text-amber-500">Rerouted</span>
-              )}
+                {selectedShipment.delay > 0 && (
+                  <span className="text-red-500 font-medium">
+                    +{formatDelayHrs(selectedShipment.delay)}
+                  </span>
+                )}
+                {selectedShipment.slaBreached && (
+                  <span className="text-red-600 font-semibold">SLA!</span>
+                )}
+                {selectedShipment.rerouted && (
+                  <span className="text-amber-500">Rerouted</span>
+                )}
+              </div>
+
+              {/* waypoint details */}
+              {selectedShipment.routeWaypoints &&
+                selectedShipment.routeWaypoints.length > 0 && (
+                  <div className="flex flex-col gap-0.5 mt-1">
+                    {[...selectedShipment.routeWaypoints]
+                      .sort((a, b) => a.order - b.order)
+                      .map((wp, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center gap-1.5 text-[9px] text-muted-foreground"
+                        >
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 rounded-full shrink-0",
+                              wp.status === "rerouted"
+                                ? "bg-amber-500"
+                                : wp.status === "completed"
+                                  ? "bg-emerald-500"
+                                  : "bg-muted-foreground/40"
+                            )}
+                          />
+                          <span className="truncate">
+                            {wp.warehouseCode} - {wp.city}
+                          </span>
+                          {wp.status === "rerouted" && (
+                            <span className="text-amber-500 text-[8px] shrink-0">
+                              rerouted
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                )}
             </div>
           )}
         </div>
 
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           <div className="space-y-2 p-3">
             {TRIGGER_CARDS.map((card) => (
               <div
                 key={card.id}
-                className="rounded-lg border border-border p-3"
+                className="rounded-lg border border-border p-3 overflow-hidden"
               >
-                <div className="flex items-center gap-2.5 mb-2">
+                <div className="flex items-start gap-2.5 mb-2">
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
                     {card.icon}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-medium leading-tight">
+                    <h3 className="text-sm font-medium leading-tight truncate">
                       {card.title}
                     </h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
@@ -555,17 +631,17 @@ export default function LogsPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 overflow-hidden">
                   <span
                     className={cn(
-                      "text-[10px] px-1.5 py-0.5 rounded bg-muted font-medium uppercase",
+                      "text-[10px] px-1.5 py-0.5 rounded bg-muted font-medium uppercase shrink-0",
                       SEVERITY_COLORS[card.severity] ||
                         "text-muted-foreground"
                     )}
                   >
                     {card.severity}
                   </span>
-                  <span className="text-[10px] text-muted-foreground font-mono">
+                  <span className="text-[10px] text-muted-foreground font-mono truncate">
                     {card.issue}
                   </span>
                 </div>
@@ -590,9 +666,7 @@ export default function LogsPage() {
                       Processing...
                     </>
                   ) : (
-                    <>
-                      Fire on Case {selectedCaseId}
-                    </>
+                    <>Fire on Case {selectedCaseId}</>
                   )}
                 </button>
               </div>

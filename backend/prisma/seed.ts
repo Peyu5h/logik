@@ -22,24 +22,34 @@ async function main() {
 
   const userPassword = await bcrypt.hash("user123", 10);
 
-  // primary consumer - rahul@acmecorp.com
+  // primary consumer - mihirgrand@yahoo.com
   const consumer1 = await prisma.user.upsert({
-    where: { email: "rahul@acmecorp.com" },
-    update: { password: userPassword, role: "consumer", name: "Rahul Sharma" },
+    where: { email: "mihirgrand@yahoo.com" },
+    update: { password: userPassword, role: "consumer", name: "Mihir" },
     create: {
-      email: "rahul@acmecorp.com",
+      email: "mihirgrand@yahoo.com",
       password: userPassword,
-      name: "Rahul Sharma",
+      name: "Mihir",
       role: "consumer",
     },
   });
 
-  // legacy email alias - points to same logical user for backward compat
+  // also link by known id if it already exists in db
+  try {
+    await prisma.user.update({
+      where: { id: "69ac991c0eeb0737ecff3419" },
+      data: { email: "mihirgrand@yahoo.com", name: "Mihir", password: userPassword, role: "consumer" },
+    });
+  } catch {
+    // user with that id may not exist yet, that's fine
+  }
+
+  // legacy aliases kept for backward compat
   const consumer1Legacy = await prisma.user.upsert({
-    where: { email: "rahul@example.com" },
+    where: { email: "rahul@acmecorp.com" },
     update: { password: userPassword, role: "consumer", name: "Rahul Sharma" },
     create: {
-      email: "rahul@example.com",
+      email: "rahul@acmecorp.com",
       password: userPassword,
       name: "Rahul Sharma",
       role: "consumer",
@@ -56,7 +66,7 @@ async function main() {
       role: "consumer",
     },
   });
-  console.log("+ 3 consumer users (rahul@acmecorp.com, rahul@example.com, priya@example.com)");
+  console.log("+ consumers: mihirgrand@yahoo.com (primary), rahul@acmecorp.com, priya@example.com");
 
   // carriers
   const carriers = [
@@ -287,7 +297,7 @@ async function main() {
     data: {
       caseId: 1,
       trackingId: "SHP-CASE001",
-      consumerId: consumer1.id,
+      consumerId: consumer1.id, // mihirgrand@yahoo.com
       status: "pending",
       priority: "high",
       origin: {
@@ -314,13 +324,18 @@ async function main() {
       weight: 2.5,
       dimensions: { length: 30, width: 20, height: 15, unit: "cm" },
       routeHistory: [],
+      routeWaypoints: [
+        { warehouseCode: "DEL-N1", warehouseName: "Delhi North Hub", city: "Delhi NCR", region: "north", lat: 28.6139, lng: 77.209, order: 1, status: "pending" },
+        { warehouseCode: "HYD-S2", warehouseName: "Hyderabad South Hub", city: "Hyderabad", region: "south", lat: 17.385, lng: 78.4867, order: 2, status: "pending" },
+        { warehouseCode: "MUM-W1", warehouseName: "Mumbai Central Hub", city: "Mumbai", region: "west", lat: 19.076, lng: 72.8777, order: 3, status: "pending" },
+      ],
       slaDeadline: hoursFromNow(48),
       slaBreached: false,
       rerouted: false,
       escalated: false,
       riskScore: 0,
       deliveryAddress: "42, Andheri East, SVP Nagar, Mumbai, Maharashtra 400069",
-      recipientName: "Rahul Sharma",
+      recipientName: "Mihir",
       recipientPhone: "+91 98765 43210",
     },
   });
@@ -331,7 +346,7 @@ async function main() {
     data: {
       caseId: 2,
       trackingId: "SHP-CASE002",
-      consumerId: consumer1.id,
+      consumerId: consumer1.id, // mihirgrand@yahoo.com
       status: "pending",
       priority: "urgent",
       origin: {
@@ -358,13 +373,18 @@ async function main() {
       weight: 8.2,
       dimensions: { length: 60, width: 40, height: 30, unit: "cm" },
       routeHistory: [],
+      routeWaypoints: [
+        { warehouseCode: "MUM-W1", warehouseName: "Mumbai Central Hub", city: "Mumbai", region: "west", lat: 19.076, lng: 72.8777, order: 1, status: "pending" },
+        { warehouseCode: "HYD-S2", warehouseName: "Hyderabad South Hub", city: "Hyderabad", region: "south", lat: 17.385, lng: 78.4867, order: 2, status: "pending" },
+        { warehouseCode: "BLR-S1", warehouseName: "Bangalore South Hub", city: "Bangalore", region: "south", lat: 12.9716, lng: 77.5946, order: 3, status: "pending" },
+      ],
       slaDeadline: hoursFromNow(36),
       slaBreached: false,
       rerouted: false,
       escalated: false,
       riskScore: 0,
       deliveryAddress: "123, HSR Layout, Sector 7, Bangalore, Karnataka 560102",
-      recipientName: "Rahul Sharma",
+      recipientName: "Mihir",
       recipientPhone: "+91 98765 43210",
     },
   });
@@ -375,7 +395,7 @@ async function main() {
     data: {
       caseId: 3,
       trackingId: "SHP-CASE003",
-      consumerId: consumer2.id,
+      consumerId: consumer1.id, // mihirgrand@yahoo.com - all demo shipments assigned to primary user
       status: "pending",
       priority: "medium",
       origin: {
@@ -402,14 +422,19 @@ async function main() {
       weight: 1.2,
       dimensions: { length: 25, width: 15, height: 10, unit: "cm" },
       routeHistory: [],
+      routeWaypoints: [
+        { warehouseCode: "KOL-E1", warehouseName: "Kolkata East Hub", city: "Kolkata", region: "east", lat: 22.5726, lng: 88.3639, order: 1, status: "pending" },
+        { warehouseCode: "HYD-S2", warehouseName: "Hyderabad South Hub", city: "Hyderabad", region: "south", lat: 17.385, lng: 78.4867, order: 2, status: "pending" },
+        { warehouseCode: "DEL-N1", warehouseName: "Delhi North Hub", city: "Delhi NCR", region: "north", lat: 28.6139, lng: 77.209, order: 3, status: "pending" },
+      ],
       slaDeadline: hoursFromNow(72),
       slaBreached: false,
       rerouted: false,
       escalated: false,
       riskScore: 0,
       deliveryAddress: "B-204, Connaught Place, New Delhi, Delhi 110001",
-      recipientName: "Priya Patel",
-      recipientPhone: "+91 87654 32109",
+      recipientName: "Mihir",
+      recipientPhone: "+91 98765 43210",
     },
   });
   console.log("+ shipment case 3:", shipment3.trackingId);
@@ -456,15 +481,29 @@ async function main() {
   }
   console.log(`+ ${agentActions.length} agent actions`);
 
+  // link all demo shipments to mihirgrand@yahoo.com by id if that user exists
+  try {
+    const mihir = await prisma.user.findUnique({ where: { email: "mihirgrand@yahoo.com" } });
+    if (mihir) {
+      await prisma.shipment.updateMany({
+        where: { caseId: { in: [1, 2, 3] } },
+        data: { consumerId: mihir.id },
+      });
+      console.log(`+ linked all 3 demo shipments to ${mihir.email} (${mihir.id})`);
+    }
+  } catch {
+    // silent
+  }
+
   console.log("\nseed complete.");
-  console.log("demo shipments:");
-  console.log("  case 1: SHP-CASE001 | Delhi -> Mumbai    | INR 45,000   | high   | carrier: DXP");
-  console.log("  case 2: SHP-CASE002 | Mumbai -> Bangalore | INR 1,25,000 | urgent | carrier: BFX");
-  console.log("  case 3: SHP-CASE003 | Kolkata -> Delhi    | INR 8,500    | medium | carrier: SFX");
+  console.log("demo shipments (multi-route, all assigned to mihirgrand@yahoo.com):");
+  console.log("  case 1: SHP-CASE001 | Delhi -> Hyderabad -> Mumbai         | INR 45,000   | high   | carrier: DXP");
+  console.log("  case 2: SHP-CASE002 | Mumbai -> Hyderabad -> Bangalore     | INR 1,25,000 | urgent | carrier: BFX");
+  console.log("  case 3: SHP-CASE003 | Kolkata -> Hyderabad -> Delhi        | INR 8,500    | medium | carrier: SFX");
   console.log("\nlogin:");
   console.log("  admin:    admin@logistix.com / admin123");
-  console.log("  consumer: rahul@acmecorp.com / user123");
-  console.log("  consumer: rahul@example.com / user123 (legacy)");
+  console.log("  consumer: mihirgrand@yahoo.com / user123 (primary - all shipments)");
+  console.log("  consumer: rahul@acmecorp.com / user123 (legacy)");
   console.log("  consumer: priya@example.com / user123");
 }
 

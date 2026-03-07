@@ -46,6 +46,7 @@ model Shipment {
   weight          Float?
   dimensions      Dimensions?
   routeHistory    RoutePoint[]
+  routeWaypoints  RouteWaypoint[]
   slaDeadline     DateTime?
   slaBreached     Boolean        @default(false)
   rerouted        Boolean        @default(false)
@@ -246,6 +247,19 @@ type AgentDecision {
   autonomous  Boolean  @default(false)
   approvedBy  String?
   executedAt  DateTime?
+}
+
+type RouteWaypoint {
+  warehouseCode String
+  warehouseName String
+  city          String
+  region        String
+  lat           Float
+  lng           Float
+  order         Int
+  status        String  @default("pending")
+  arrivedAt     DateTime?
+  departedAt    DateTime?
 }
 
 type ChatMessage {

@@ -247,11 +247,11 @@ export const reroute = async (req: Request, res: Response) => {
       return ApiResponse.notFound(res, "Shipment not found");
     }
 
-    // find carrier by code or id
+    // find carrier by code
     let carrier: Awaited<ReturnType<typeof prisma.carrier.findFirst>> = null;
     if (newCarrier) {
       carrier = await prisma.carrier.findFirst({
-        where: { OR: [{ code: newCarrier }, { id: newCarrier }] },
+        where: { code: newCarrier },
       });
     }
 
@@ -581,7 +581,7 @@ export const carrierReliability = async (req: Request, res: Response) => {
     const { carrier: carrierCode } = req.params;
 
     const carrier = await prisma.carrier.findFirst({
-      where: { OR: [{ code: carrierCode as string }, { id: carrierCode as string }] },
+      where: { code: carrierCode as string },
     });
 
     if (!carrier) {
@@ -781,6 +781,14 @@ export const getShipmentByCaseId = async (req: Request, res: Response) => {
       recipientName: shipment.recipientName,
       recipientPhone: shipment.recipientPhone,
       routeHistory: shipment.routeHistory,
+      routeWaypoints: shipment.routeWaypoints || [],
+      route: [
+        shipment.origin?.city,
+        ...(shipment.routeWaypoints || [])
+          .sort((a: any, b: any) => a.order - b.order)
+          .map((wp: any) => wp.city),
+        shipment.destination?.city,
+      ].filter(Boolean),
       agentNotes: shipment.agentNotes,
       incidents: shipment.incidents.map((i) => ({
         _id: i.id,
