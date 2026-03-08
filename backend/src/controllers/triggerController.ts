@@ -557,6 +557,10 @@ async function handleSetInTransit(res: Response, shipment: any) {
     return ApiResponse.error(res, `Cannot set in_transit: shipment is ${shipment.status}`, 400);
   }
 
+  if (shipment.status === "in_transit") {
+    return ApiResponse.error(res, "Shipment is already in transit", 400);
+  }
+
   const waypoints: any[] = (shipment as any).routeWaypoints || [];
   if (waypoints.length > 0) {
     const sorted = waypoints.sort((a: any, b: any) => a.order - b.order);

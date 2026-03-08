@@ -133,22 +133,53 @@ function getShipmentCoords(shipment: Shipment): {
       }
 
       case "in_transit": {
-        // midpoint between last completed waypoint (or origin) and next pending waypoint (or destination)
+        // find the segment the shipment is currently traversing
+        // "from" = last completed waypoint (or origin)
+        // "to" = the next waypoint after the in_transit one (or destination)
         const lastCompleted = [...sorted].reverse().find((wp) => wp.status === "completed");
-        const nextPending = sorted.find((wp) => wp.status === "pending" || wp.status === "in_transit");
+        const inTransitWp = sorted.find((wp) => wp.status === "in_transit");
+        const nextPendingAfterTransit = inTransitWp
+          ? sorted.find((wp) => wp.order > inTransitWp.order && wp.status === "pending")
+          : sorted.find((wp) => wp.status === "pending");
 
+        // "from" is the last completed waypoint or origin
         const fromCoord = lastCompleted
           ? (lastCompleted.lat && lastCompleted.lng ? [lastCompleted.lng, lastCompleted.lat] as [number, number] : getCityCoords(lastCompleted.city))
           : originCoords;
 
-        const toCoord = nextPending
-          ? (nextPending.lat && nextPending.lng ? [nextPending.lng, nextPending.lat] as [number, number] : getCityCoords(nextPending.city))
-          : destCoords;
+        // "to" is the in_transit waypoint itself (the one we're heading toward)
+        // if fromCoord would be the same city, use the waypoint after it instead
+        let toCoord: [number, number] | null = null;
+        if (inTransitWp) {
+          const wpCoord = inTransitWp.lat && inTransitWp.lng
+            ? [inTransitWp.lng, inTransitWp.lat] as [number, number]
+            : getCityCoords(inTransitWp.city);
 
-        if (fromCoord && toCoord) {
+          // check if from and to resolve to the same point (same city)
+          if (wpCoord && fromCoord &&
+            Math.abs(wpCoord[0] - fromCoord[0]) < 0.01 &&
+            Math.abs(wpCoord[1] - fromCoord[1]) < 0.01) {
+            // origin and first waypoint are same city — use the next waypoint as destination
+            const afterWp = nextPendingAfterTransit;
+            toCoord = afterWp
+              ? (afterWp.lat && afterWp.lng ? [afterWp.lng, afterWp.lat] as [number, number] : getCityCoords(afterWp.city))
+              : destCoords;
+          } else {
+            toCoord = wpCoord;
+          }
+        } else if (nextPendingAfterTransit) {
+          toCoord = nextPendingAfterTransit.lat && nextPendingAfterTransit.lng
+            ? [nextPendingAfterTransit.lng, nextPendingAfterTransit.lat] as [number, number]
+            : getCityCoords(nextPendingAfterTransit.city);
+        } else {
+          toCoord = destCoords;
+        }
+
+        if (fromCoord && toCoord &&
+          (Math.abs(fromCoord[0] - toCoord[0]) > 0.01 || Math.abs(fromCoord[1] - toCoord[1]) > 0.01)) {
           currentCoords = [
-            fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.5,
-            fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.5,
+            fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.45,
+            fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.45,
           ];
         } else if (originCoords && destCoords) {
           // fallback: interpolate along full route
@@ -203,20 +234,41 @@ function getShipmentCoords(shipment: Shipment): {
       // delayed — same logic as in_transit (shipment stays in_transit conceptually)
       case "delayed": {
         const lastCompleted = [...sorted].reverse().find((wp) => wp.status === "completed");
-        const nextPending = sorted.find((wp) => wp.status === "pending" || wp.status === "in_transit");
+        const inTransitWp = sorted.find((wp) => wp.status === "in_transit");
+        const nextPendingAfterTransit = inTransitWp
+          ? sorted.find((wp) => wp.order > inTransitWp.order && wp.status === "pending")
+          : sorted.find((wp) => wp.status === "pending");
 
         const fromCoord = lastCompleted
           ? (lastCompleted.lat && lastCompleted.lng ? [lastCompleted.lng, lastCompleted.lat] as [number, number] : getCityCoords(lastCompleted.city))
           : originCoords;
 
-        const toCoord = nextPending
-          ? (nextPending.lat && nextPending.lng ? [nextPending.lng, nextPending.lat] as [number, number] : getCityCoords(nextPending.city))
-          : destCoords;
+        let toCoord: [number, number] | null = null;
+        if (inTransitWp) {
+          const wpCoord = inTransitWp.lat && inTransitWp.lng
+            ? [inTransitWp.lng, inTransitWp.lat] as [number, number]
+            : getCityCoords(inTransitWp.city);
+          if (wpCoord && fromCoord &&
+            Math.abs(wpCoord[0] - fromCoord[0]) < 0.01 &&
+            Math.abs(wpCoord[1] - fromCoord[1]) < 0.01) {
+            const afterWp = nextPendingAfterTransit;
+            toCoord = afterWp
+              ? (afterWp.lat && afterWp.lng ? [afterWp.lng, afterWp.lat] as [number, number] : getCityCoords(afterWp.city))
+              : destCoords;
+          } else {
+            toCoord = wpCoord;
+          }
+        } else {
+          toCoord = nextPendingAfterTransit
+            ? (nextPendingAfterTransit.lat && nextPendingAfterTransit.lng ? [nextPendingAfterTransit.lng, nextPendingAfterTransit.lat] as [number, number] : getCityCoords(nextPendingAfterTransit.city))
+            : destCoords;
+        }
 
-        if (fromCoord && toCoord) {
+        if (fromCoord && toCoord &&
+          (Math.abs(fromCoord[0] - toCoord[0]) > 0.01 || Math.abs(fromCoord[1] - toCoord[1]) > 0.01)) {
           currentCoords = [
-            fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.5,
-            fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.5,
+            fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.45,
+            fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.45,
           ];
         }
         break;
@@ -268,6 +320,14 @@ export default function TrackPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [mapLoaded, setMapLoaded] = useState(false);
+
+  // poll shipments every 5s for real-time map updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetch();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [refetch]);
 
   const filtered = useMemo(() => {
     if (!searchQuery) return shipments;

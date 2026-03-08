@@ -9,11 +9,11 @@ import {
   Truck,
   RefreshCw,
   AlertOctagon,
-  CheckCircle2,
   ArrowRight,
   Play,
   Warehouse,
   RotateCcw,
+  TrafficCone,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
@@ -30,6 +30,8 @@ interface RouteWaypoint {
   warehouseName: string;
   city: string;
   region: string;
+  lat?: number;
+  lng?: number;
   order: number;
   status: string;
 }
@@ -72,7 +74,7 @@ const TRIGGER_CARDS: TriggerCard[] = [
   {
     id: "delay",
     title: "Delay +2hrs",
-    description: "Adds 2hr delay. Auto-reassigns carrier at 2hrs, emails consumer, reroutes warehouse at 10hrs.",
+    description: "Adds 2hr delay. 2hrs: notify + auto-assign if pending. 4hrs: email. 6hrs: carrier swap at next warehouse.",
     icon: <Clock className="h-4 w-4" />,
     severity: "high",
     issue: "delay",
@@ -88,10 +90,18 @@ const TRIGGER_CARDS: TriggerCard[] = [
   {
     id: "arrived-warehouse",
     title: "Arrived at Warehouse",
-    description: "Advance to next waypoint. Swaps carrier if delay >= 8hrs.",
+    description: "Advance to next waypoint. Swaps carrier if delay >= 6hrs.",
     icon: <Warehouse className="h-4 w-4" />,
     severity: "medium",
     issue: "arrived_warehouse",
+  },
+  {
+    id: "congestion",
+    title: "Congestion Control",
+    description: "Marks nearest warehouse congested (100%). Reroutes shipments to the next available warehouse.",
+    icon: <TrafficCone className="h-4 w-4" />,
+    severity: "high",
+    issue: "congestion",
   },
   {
     id: "sla-breach",
@@ -102,17 +112,9 @@ const TRIGGER_CARDS: TriggerCard[] = [
     issue: "SLA_BREACH",
   },
   {
-    id: "resolve",
-    title: "Resolve All Issues",
-    description: "Clear all delays, reset risk, resolve incidents.",
-    icon: <CheckCircle2 className="h-4 w-4" />,
-    severity: "low",
-    issue: "resolve",
-  },
-  {
     id: "reset-demo",
     title: "Reset Demo",
-    description: "Reset shipment to pristine seed state. Restores carriers and waypoints.",
+    description: "Reset shipment to pristine seed state. Restores carriers, waypoints, and warehouses.",
     icon: <RotateCcw className="h-4 w-4" />,
     severity: "low",
     issue: "reset_demo",
@@ -147,34 +149,39 @@ function formatDelayHrs(minutes: number): string {
   return `${hrs}h ${mins}m`;
 }
 
-// renders the multi-hop route as city -> city -> city
+// renders the multi-hop route as city -> city -> city (deduplicated)
 function RouteDisplay({ shipment }: { shipment: ShipmentState }) {
-  const route = shipment.route;
-  if (route && route.length > 0) {
+  // build deduplicated ordered city list from origin -> waypoints -> destination
+  const waypoints = shipment.routeWaypoints || [];
+  const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+  const cities: string[] = [];
+
+  if (shipment.origin?.city) cities.push(shipment.origin.city);
+  for (const wp of sorted) {
+    if (wp.city && cities[cities.length - 1] !== wp.city) cities.push(wp.city);
+  }
+  if (shipment.destination?.city && cities[cities.length - 1] !== shipment.destination.city) {
+    cities.push(shipment.destination.city);
+  }
+
+  // if we got nothing from waypoints, try the pre-built route array
+  if (cities.length === 0 && shipment.route && shipment.route.length > 0) {
+    const deduped: string[] = [];
+    for (const c of shipment.route) {
+      if (deduped[deduped.length - 1] !== c) deduped.push(c);
+    }
     return (
       <div className="flex items-center gap-0.5 flex-wrap">
-        {route.map((city, i) => (
+        {deduped.map((city, i) => (
           <span key={i} className="flex items-center gap-0.5">
             <span className="text-[9px] whitespace-nowrap">{city}</span>
-            {i < route.length - 1 && (
+            {i < deduped.length - 1 && (
               <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
             )}
           </span>
         ))}
       </div>
     );
-  }
-
-  // fallback to origin -> waypoints -> destination
-  const waypoints = shipment.routeWaypoints || [];
-  const sorted = [...waypoints].sort((a, b) => a.order - b.order);
-  const cities: string[] = [];
-  if (shipment.origin?.city) cities.push(shipment.origin.city);
-  for (const wp of sorted) {
-    if (wp.city && !cities.includes(wp.city)) cities.push(wp.city);
-  }
-  if (shipment.destination?.city && !cities.includes(shipment.destination.city)) {
-    cities.push(shipment.destination.city);
   }
 
   if (cities.length === 0) return <span className="text-[9px]">No route</span>;
@@ -300,6 +307,16 @@ export default function LogsPage() {
     }, 3000);
   };
 
+  // resolves the congestion trigger endpoint for a given shipment
+  const getCongestionWarehouseCode = (): string | null => {
+    if (!selectedShipment) return null;
+    const waypoints = selectedShipment.routeWaypoints || [];
+    const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+    // find the next pending/in_transit waypoint warehouse to congest
+    const nextWp = sorted.find((wp) => wp.status === "pending" || wp.status === "in_transit");
+    return nextWp?.warehouseCode || null;
+  };
+
   // fires a trigger against the selected shipment
   const triggerSignal = async (card: TriggerCard) => {
     if (!selectedShipment) {
@@ -310,6 +327,19 @@ export default function LogsPage() {
     setLoadingTriggers((prev) => ({ ...prev, [card.id]: true }));
 
     const timestamp = new Date().toISOString();
+
+    // for congestion, we need the warehouse code
+    let triggerUrl = `${API_BASE_URL}/api/triggers/${selectedCaseId}/${card.issue}`;
+    if (card.issue === "congestion") {
+      const whCode = getCongestionWarehouseCode();
+      if (!whCode) {
+        toast.error("No pending warehouse found to congest");
+        setLoadingTriggers((prev) => ({ ...prev, [card.id]: false }));
+        return;
+      }
+      triggerUrl = `${API_BASE_URL}/api/triggers/${whCode}/congestion`;
+    }
+
     const logEntry: SystemLog = {
       id: `local-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
       timestamp,
@@ -321,13 +351,10 @@ export default function LogsPage() {
     addLocalLog(logEntry);
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/triggers/${selectedCaseId}/${card.issue}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+      const response = await fetch(triggerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
 
       const result = await response.json();
 
@@ -336,13 +363,23 @@ export default function LogsPage() {
         const changes = d.changes || {};
         const actions = d.actions || {};
 
+        let resultMessage = `Case ${selectedCaseId}: ${card.title} processed.`;
+        if (card.issue === "congestion") {
+          const congested = d.congestedWarehouse;
+          const alternate = d.alternateWarehouse;
+          const count = d.reroutedShipments?.length || 0;
+          resultMessage = `${congested?.name || congested?.code} congested. ${count} shipment(s) rerouted to ${alternate?.name || alternate?.code} (${alternate?.city || ""}).`;
+        } else {
+          resultMessage += ` Delay: ${changes.delay?.total || 0}min, Risk: ${changes.riskScore?.new || 0}%. ${actions.carrierReassigned ? "Carrier reassigned. " : ""}${actions.emailTriggered ? "Email sent. " : ""}${actions.warehouseRerouted ? "Warehouse rerouted. " : ""}`;
+        }
+
         const resultLog: SystemLog = {
           id: `local-result-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
           timestamp: new Date().toISOString(),
           event_type: `trigger_${card.issue}_result`,
           source: "trigger_engine",
           severity: card.severity,
-          message: `Case ${selectedCaseId}: ${card.title} processed. Delay: ${changes.delay?.total || 0}min, Risk: ${changes.riskScore?.new || 0}%. ${actions.carrierReassigned ? "Carrier reassigned. " : ""}${actions.emailTriggered ? "Email sent. " : ""}${actions.warehouseRerouted ? "Warehouse rerouted. " : ""}`,
+          message: resultMessage,
         };
         addLocalLog(resultLog);
 
@@ -612,65 +649,85 @@ export default function LogsPage() {
 
         <ScrollArea className="flex-1 min-h-0">
           <div className="space-y-2 p-3">
-            {TRIGGER_CARDS.map((card) => (
-              <div
-                key={card.id}
-                className="rounded-lg border border-border p-3 overflow-hidden"
-              >
-                <div className="flex items-start gap-2.5 mb-2">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                    {card.icon}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-medium leading-tight truncate">
-                      {card.title}
-                    </h3>
-                    <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
-                      {card.description}
-                    </p>
-                  </div>
-                </div>
+            {TRIGGER_CARDS.map((card) => {
+              // disable "Set In Transit" when already in transit
+              const isSetTransitDisabled =
+                card.issue === "set_in_transit" &&
+                selectedShipment?.status === "in_transit";
+              // disable congestion if no pending waypoint
+              const isCongestionDisabled =
+                card.issue === "congestion" &&
+                selectedShipment &&
+                !(selectedShipment.routeWaypoints || []).some(
+                  (wp) => wp.status === "pending" || wp.status === "in_transit"
+                );
+              const isDisabled =
+                loadingTriggers[card.id] ||
+                !selectedShipment ||
+                isSetTransitDisabled ||
+                isCongestionDisabled;
 
-                <div className="flex items-center gap-2 mb-2 overflow-hidden">
-                  <span
+              return (
+                <div
+                  key={card.id}
+                  className="rounded-lg border border-border p-3 overflow-hidden"
+                >
+                  <div className="flex items-start gap-2.5 mb-2">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                      {card.icon}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-medium leading-tight truncate">
+                        {card.title}
+                      </h3>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
+                        {card.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 mb-2 overflow-hidden">
+                    <span
+                      className={cn(
+                        "text-[10px] px-1.5 py-0.5 rounded bg-muted font-medium uppercase shrink-0",
+                        SEVERITY_COLORS[card.severity] ||
+                          "text-muted-foreground"
+                      )}
+                    >
+                      {card.severity}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground font-mono truncate">
+                      {card.issue}
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={() => triggerSignal(card)}
+                    disabled={!!isDisabled}
                     className={cn(
-                      "text-[10px] px-1.5 py-0.5 rounded bg-muted font-medium uppercase shrink-0",
-                      SEVERITY_COLORS[card.severity] ||
-                        "text-muted-foreground"
+                      "w-full h-8 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-border",
+                      card.issue === "congestion"
+                        ? "bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 border-amber-500/30"
+                        : card.severity === "critical"
+                          ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/30"
+                          : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground",
+                      isDisabled && "opacity-50 cursor-not-allowed"
                     )}
                   >
-                    {card.severity}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground font-mono truncate">
-                    {card.issue}
-                  </span>
+                    {loadingTriggers[card.id] ? (
+                      <>
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Processing...
+                      </>
+                    ) : isSetTransitDisabled ? (
+                      <>Already In Transit</>
+                    ) : (
+                      <>Fire on Case {selectedCaseId}</>
+                    )}
+                  </button>
                 </div>
-
-                <button
-                  onClick={() => triggerSignal(card)}
-                  disabled={loadingTriggers[card.id] || !selectedShipment}
-                  className={cn(
-                    "w-full h-8 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-1.5 border border-border",
-                    card.issue === "resolve"
-                      ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 border-emerald-500/30"
-                      : card.severity === "critical"
-                        ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/30"
-                        : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground",
-                    (loadingTriggers[card.id] || !selectedShipment) &&
-                      "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  {loadingTriggers[card.id] ? (
-                    <>
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Processing...
-                    </>
-                  ) : (
-                    <>Fire on Case {selectedCaseId}</>
-                  )}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </ScrollArea>
       </div>

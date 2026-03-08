@@ -10,14 +10,16 @@ import {
   AlertTriangle,
   MapPin,
   Phone,
-  ChevronRight,
-  UserCircle,
   Bot,
   RotateCcw,
+  ChevronRight,
+  Plus,
+  Search,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
+import { Input } from "~/components/ui/input";
 import { cn } from "~/lib/utils";
 import { toast } from "sonner";
 import useUser from "~/hooks/useUser";
@@ -40,6 +42,18 @@ interface ChatMsg {
     style?: string;
     action_payload?: Record<string, unknown>;
   }>;
+  toolsUsed?: string[];
+  isThinking?: boolean;
+}
+
+interface SupportTicket {
+  id: string;
+  sessionId: string;
+  lastMessage: string;
+  timestamp: string;
+  messageCount: number;
+  shipmentId?: string;
+  trackingId?: string;
 }
 
 const QUICK_ISSUES = [
@@ -96,6 +110,33 @@ function formatTime(ts: number) {
   });
 }
 
+function formatRelativeTime(ts: string) {
+  const diff = Date.now() - new Date(ts).getTime();
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}d ago`;
+  if (hours > 0) return `${hours}h ago`;
+  if (minutes > 0) return `${minutes}m ago`;
+  return "just now";
+}
+
+// thinking indicator component
+function ThinkingBubble() {
+  return (
+    <div className="flex justify-start">
+      <div className="flex max-w-[85%] flex-col items-start">
+        <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span className="animate-pulse">Thinking...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SupportPage() {
   const { user } = useUser();
   const { data: shipmentsData } = useMyShipments();
@@ -112,8 +153,9 @@ export default function SupportPage() {
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isEscalated, setIsEscalated] = useState(false);
-  const [selectedShipment, setSelectedShipment] = useState<string | null>(null);
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+  const [ticketSearch, setTicketSearch] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -130,7 +172,7 @@ export default function SupportPage() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [messages, isLoading, scrollToBottom]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -140,14 +182,69 @@ export default function SupportPage() {
     }
   }, [input]);
 
-  // auto-select first shipment if available
-  useEffect(() => {
-    if (shipments.length > 0 && !selectedShipment) {
-      setSelectedShipment(shipments[0]._id);
+  // build shipment context for all active shipments
+  const buildShipmentContext = useCallback(() => {
+    if (shipments.length === 0) return null;
+    return shipments.map((s) => ({
+      case_id: s.case_id,
+      tracking_id: s.tracking_id,
+      status: s.status,
+      delay: s.delay,
+      carrier: s.carrier?.code || "unassigned",
+      origin: s.origin?.city,
+      destination: s.destination?.city,
+      sla_breached: s.sla_breached,
+      risk_score: s.risk_score,
+      estimated_delivery: s.estimated_delivery,
+      value: s.value,
+    }));
+  }, [shipments]);
+
+  // fetch past tickets
+  const fetchTickets = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      // get chat histories from shipments
+      const ticketList: SupportTicket[] = [];
+      for (const s of shipments) {
+        try {
+          const res = await fetch(
+            `${API_BASE_URL}/api/admin/incidents/${s._id}/messages`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            const msgs = data.data?.messages || [];
+            if (msgs.length > 0) {
+              const lastMsg = msgs[msgs.length - 1];
+              ticketList.push({
+                id: s._id,
+                sessionId: s._id,
+                lastMessage:
+                  lastMsg.content?.substring(0, 80) + (lastMsg.content?.length > 80 ? "..." : ""),
+                timestamp: lastMsg.timestamp,
+                messageCount: msgs.length,
+                shipmentId: s._id,
+                trackingId: s.tracking_id,
+              });
+            }
+          }
+        } catch {
+          // skip
+        }
+      }
+      setTickets(ticketList);
+    } catch {
+      // silent
     }
-  }, [shipments, selectedShipment]);
+  }, [user?.id, shipments]);
+
+  useEffect(() => {
+    fetchTickets();
+  }, [fetchTickets]);
 
   const sendToAgent = async (content: string) => {
+    if (!content.trim() || isLoading) return;
+
     setIsLoading(true);
 
     const userMsg: ChatMsg = {
@@ -160,46 +257,28 @@ export default function SupportPage() {
     setInput("");
 
     try {
-      // build context about the selected shipment
-      const selected = shipments.find((s) => s._id === selectedShipment);
-      const shipmentContext = selected
-        ? {
-            case_id: selected.case_id,
-            tracking_id: selected.tracking_id,
-            status: selected.status,
-            delay: selected.delay,
-            carrier: selected.carrier?.code || "unassigned",
-            origin: selected.origin?.city,
-            destination: selected.destination?.city,
-            sla_breached: selected.sla_breached,
-            risk_score: selected.risk_score,
-            estimated_delivery: selected.estimated_delivery,
-            value: selected.value,
-          }
-        : null;
+      const shipmentContext = buildShipmentContext();
 
       const payload = {
         type: "customer_support",
         consumer_id: user?.id || "anonymous",
         consumer_name: user?.name || "Customer",
         consumer_email: user?.email || "",
-        shipment_id: selectedShipment,
         shipment_context: shipmentContext,
+        all_shipments: shipmentContext,
         message: { content },
-        is_escalated: isEscalated,
       };
 
-      // try the shipments/agent endpoint first
       let agentMessage =
         "I understand your concern. Let me look into this for you.";
       let cards: ChatMsg["cards"] = [];
+      let toolsUsed: string[] = [];
 
       try {
         const res = await fetch(`${API_BASE_URL}/api/shipments/agent`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            shipment_id: selectedShipment,
             consumer_id: user?.id || "anonymous",
             message: { content },
           }),
@@ -210,9 +289,9 @@ export default function SupportPage() {
           const d = data.data || data;
           if (d.agent_message) agentMessage = d.agent_message;
           if (d.cards) cards = d.cards;
+          if (d.tools_used) toolsUsed = d.tools_used;
         }
       } catch {
-        // fallback: try webhook directly
         try {
           const webhookRes = await fetch(WEBHOOK_URL, {
             method: "POST",
@@ -225,6 +304,7 @@ export default function SupportPage() {
             if (wd.agent_message || wd.message)
               agentMessage = wd.agent_message || wd.message;
             if (wd.cards) cards = wd.cards;
+            if (wd.tools_used) toolsUsed = wd.tools_used;
           }
         } catch {
           // both failed
@@ -236,11 +316,14 @@ export default function SupportPage() {
         role: "assistant",
         content: agentMessage,
         timestamp: Date.now(),
-        isHuman: isEscalated,
         cards: cards?.length ? cards : undefined,
+        toolsUsed: toolsUsed?.length ? toolsUsed : undefined,
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
+
+      // refresh tickets after sending
+      setTimeout(fetchTickets, 1000);
     } catch {
       const errorMsg: ChatMsg = {
         id: generateId(),
@@ -255,38 +338,15 @@ export default function SupportPage() {
     }
   };
 
-  const handleQuickIssue = (issue: (typeof QUICK_ISSUES)[number]) => {
-    sendToAgent(issue.message);
+  // action buttons fill input instead of auto-sending
+  const handleCardClick = (card: NonNullable<ChatMsg["cards"]>[number]) => {
+    setInput(card.label);
+    textareaRef.current?.focus();
   };
 
-  const handleEscalate = () => {
-    setIsEscalated(true);
-    const systemMsg: ChatMsg = {
-      id: generateId(),
-      role: "system",
-      content:
-        "You've been connected to a human agent. They will respond shortly.",
-      timestamp: Date.now(),
-    };
-    setMessages((prev) => [...prev, systemMsg]);
-    toast.success("Connected to human agent");
-
-    // fire webhook to notify
-    fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "escalate_to_human",
-        consumer_id: user?.id,
-        consumer_name: user?.name,
-        consumer_email: user?.email,
-        shipment_id: selectedShipment,
-        message_history: messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-      }),
-    }).catch(() => {});
+  const handleQuickIssue = (issue: (typeof QUICK_ISSUES)[number]) => {
+    setInput(issue.message);
+    textareaRef.current?.focus();
   };
 
   const handleNewConversation = () => {
@@ -299,7 +359,7 @@ export default function SupportPage() {
         timestamp: Date.now(),
       },
     ]);
-    setIsEscalated(false);
+    setActiveTicketId(null);
     setInput("");
   };
 
@@ -317,168 +377,142 @@ export default function SupportPage() {
 
   const showQuickIssues = messages.length <= 2 && !isLoading;
 
+  const filteredTickets = ticketSearch
+    ? tickets.filter(
+        (t) =>
+          t.trackingId?.toLowerCase().includes(ticketSearch.toLowerCase()) ||
+          t.lastMessage.toLowerCase().includes(ticketSearch.toLowerCase())
+      )
+    : tickets;
+
   return (
     <div className="flex h-full overflow-hidden">
-      {/* shipment selector sidebar */}
-      <div className="hidden w-72 flex-col border-r lg:flex">
-        <div className="shrink-0 border-b px-4 py-4">
-          <h2 className="text-sm font-semibold">Your Shipments</h2>
-          <p className="text-muted-foreground mt-0.5 text-xs">
-            Select a shipment to get help with
-          </p>
-        </div>
-
-        <ScrollArea className="flex-1">
-          <div className="space-y-1 p-2">
-            {shipments.length === 0 && (
-              <p className="text-muted-foreground px-3 py-6 text-center text-xs">
-                No shipments found
-              </p>
-            )}
-            {shipments.map((s) => {
-              const isActive = s._id === selectedShipment;
-              const statusColors: Record<string, string> = {
-                pending: "bg-yellow-500",
-                picked_up: "bg-blue-500",
-                in_transit: "bg-blue-500",
-                at_warehouse: "bg-purple-500",
-                out_for_delivery: "bg-cyan-500",
-                delivered: "bg-emerald-500",
-                delayed: "bg-red-500",
-                cancelled: "bg-zinc-500",
-              };
-              return (
-                <button
-                  key={s._id}
-                  onClick={() => setSelectedShipment(s._id)}
-                  className={cn(
-                    "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
-                    isActive
-                      ? "bg-primary/10 border-primary/20 border"
-                      : "hover:bg-muted border border-transparent"
-                  )}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium truncate">
-                        {s.tracking_id}
-                      </span>
-                      <span
-                        className={cn(
-                          "h-1.5 w-1.5 rounded-full shrink-0",
-                          statusColors[s.status] || "bg-zinc-400"
-                        )}
-                      />
-                    </div>
-                    <p className="text-muted-foreground mt-0.5 text-[11px] truncate">
-                      {s.origin?.city || "?"} → {s.destination?.city || "?"}
-                    </p>
-                    <div className="mt-1 flex items-center gap-2">
-                      <span className="text-muted-foreground text-[10px] capitalize">
-                        {s.status.replace(/_/g, " ")}
-                      </span>
-                      {s.delay > 0 && (
-                        <span className="text-[10px] text-red-500">
-                          +{Math.round(s.delay / 60)}h delay
-                        </span>
-                      )}
-                    </div>
-                    {s.value > 0 && (
-                      <span className="text-muted-foreground text-[10px]">
-                        INR {s.value.toLocaleString("en-IN")}
-                      </span>
-                    )}
-                  </div>
-                  <ChevronRight
-                    className={cn(
-                      "h-4 w-4 shrink-0 mt-1",
-                      isActive
-                        ? "text-primary"
-                        : "text-muted-foreground/50"
-                    )}
-                  />
-                </button>
-              );
-            })}
-          </div>
-        </ScrollArea>
-      </div>
-
-      {/* chat area */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {/* header */}
-        <div className="border-border/40 flex h-14 shrink-0 items-center justify-between border-b px-4">
-          <div className="flex items-center gap-2">
-            <div className="bg-muted flex h-8 w-8 items-center justify-center rounded-lg">
-              {isEscalated ? (
-                <UserCircle className="text-primary h-4 w-4" />
-              ) : (
-                <Bot className="text-foreground h-4 w-4" />
-              )}
+      {/* left: past tickets sidebar */}
+      <div className="hidden w-64 flex-col border-r lg:flex">
+        <div className="shrink-0 border-b px-3 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <MessageCircle className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Support</span>
             </div>
-            <div>
-              <h1 className="text-foreground text-sm font-medium">
-                {isEscalated ? "Human Agent" : "Support Assistant"}
-              </h1>
-              <p className="text-muted-foreground text-xs">
-                {isEscalated
-                  ? "Connected to agent"
-                  : selectedShipment
-                    ? shipments.find((s) => s._id === selectedShipment)
-                        ?.tracking_id || "Select a shipment"
-                    : "General support"}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {!isEscalated && messages.length > 2 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleEscalate}
-                className="gap-1.5 text-xs"
-              >
-                <UserCircle className="h-3.5 w-3.5" />
-                Talk to human
-              </Button>
-            )}
             <Button
               variant="ghost"
               size="sm"
               onClick={handleNewConversation}
-              className="gap-1.5 text-xs"
+              className="h-7 w-7 p-0"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
-              New
+              <Plus className="h-3.5 w-3.5" />
             </Button>
           </div>
+          {tickets.length > 3 && (
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search tickets..."
+                value={ticketSearch}
+                onChange={(e) => setTicketSearch(e.target.value)}
+                className="h-7 pl-7 text-xs"
+              />
+            </div>
+          )}
         </div>
 
-        {/* escalation banner */}
-        {isEscalated && (
-          <div className="bg-primary/10 border-primary/20 border-b px-4 py-2">
-            <p className="text-primary text-xs">
-              You're now chatting with a human agent. They'll respond shortly.
-            </p>
-          </div>
-        )}
-
-        {/* mobile shipment selector */}
-        <div className="border-b px-4 py-2 lg:hidden">
-          <select
-            value={selectedShipment || ""}
-            onChange={(e) => setSelectedShipment(e.target.value || null)}
-            className="bg-muted text-foreground w-full rounded-md border px-3 py-1.5 text-xs"
+        <ScrollArea className="flex-1">
+          {/* new conversation button */}
+          <button
+            onClick={handleNewConversation}
+            className={cn(
+              "flex w-full items-center gap-2 border-b border-border/30 px-3 py-2.5 text-left transition-colors",
+              !activeTicketId
+                ? "bg-primary/5 border-l-2 border-l-primary"
+                : "hover:bg-muted/30 border-l-2 border-l-transparent"
+            )}
           >
-            <option value="">No shipment selected</option>
-            {shipments.map((s) => (
-              <option key={s._id} value={s._id}>
-                {s.tracking_id} — {s.origin?.city} → {s.destination?.city} (
-                {s.status.replace(/_/g, " ")})
-              </option>
-            ))}
-          </select>
+            <div className="bg-primary/10 flex h-7 w-7 shrink-0 items-center justify-center rounded-md">
+              <Bot className="h-3.5 w-3.5 text-primary" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium">New Conversation</p>
+              <p className="text-[10px] text-muted-foreground truncate">
+                Start fresh with the agent
+              </p>
+            </div>
+          </button>
+
+          {/* past tickets */}
+          {filteredTickets.length > 0 && (
+            <div className="px-3 pt-2 pb-1">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Past Tickets
+              </p>
+            </div>
+          )}
+          {filteredTickets.map((ticket) => (
+            <button
+              key={ticket.id}
+              onClick={() => setActiveTicketId(ticket.id)}
+              className={cn(
+                "flex w-full items-start gap-2 border-b border-border/30 px-3 py-2.5 text-left transition-colors",
+                activeTicketId === ticket.id
+                  ? "bg-primary/5 border-l-2 border-l-primary"
+                  : "hover:bg-muted/30 border-l-2 border-l-transparent"
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] font-mono text-muted-foreground truncate">
+                    {ticket.trackingId || "General"}
+                  </span>
+                  <span className="text-[9px] text-muted-foreground/60 shrink-0">
+                    {formatRelativeTime(ticket.timestamp)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
+                  {ticket.lastMessage}
+                </p>
+                <span className="text-[9px] text-muted-foreground/50 mt-0.5">
+                  {ticket.messageCount} messages
+                </span>
+              </div>
+              <ChevronRight className="h-3 w-3 shrink-0 mt-1 text-muted-foreground/30" />
+            </button>
+          ))}
+
+          {filteredTickets.length === 0 && tickets.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-10 px-4">
+              <MessageCircle className="h-6 w-6 text-muted-foreground/30" />
+              <p className="mt-2 text-[11px] text-muted-foreground/50 text-center">
+                No past conversations yet
+              </p>
+            </div>
+          )}
+        </ScrollArea>
+      </div>
+
+      {/* center: chat area */}
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {/* header */}
+        <div className="border-border/40 flex h-12 shrink-0 items-center justify-between border-b px-4">
+          <div className="flex items-center gap-2">
+            <div className="bg-muted flex h-7 w-7 items-center justify-center rounded-lg">
+              <Bot className="text-foreground h-3.5 w-3.5" />
+            </div>
+            <div>
+              <h1 className="text-foreground text-sm font-medium">
+                Support Assistant
+              </h1>
+            </div>
+          </div>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleNewConversation}
+            className="gap-1.5 text-xs"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            New
+          </Button>
         </div>
 
         {/* messages */}
@@ -511,15 +545,6 @@ export default function SupportPage() {
                       isUser ? "items-end" : "items-start"
                     )}
                   >
-                    {!isUser && msg.isHuman && (
-                      <div className="mb-1 flex items-center gap-1">
-                        <UserCircle className="text-primary h-3 w-3" />
-                        <span className="text-primary text-[10px] font-medium">
-                          human agent
-                        </span>
-                      </div>
-                    )}
-
                     <div
                       className={cn(
                         "relative max-w-full rounded-2xl px-4 py-2.5",
@@ -535,19 +560,27 @@ export default function SupportPage() {
                       </p>
                     </div>
 
-                    {/* action cards from agent */}
+                    {/* tools used */}
+                    {!isUser && msg.toolsUsed && msg.toolsUsed.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {msg.toolsUsed.map((tool, i) => (
+                          <span
+                            key={i}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono"
+                          >
+                            {tool}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* action cards - fill input instead of sending */}
                     {!isUser && msg.cards && msg.cards.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {msg.cards.map((card) => (
                           <button
                             key={card.id}
-                            onClick={() => {
-                              if (card.action_payload) {
-                                sendToAgent(
-                                  `Execute action: ${card.label}`
-                                );
-                              }
-                            }}
+                            onClick={() => handleCardClick(card)}
                             className="border-border bg-background hover:bg-muted rounded-md border px-2.5 py-1 text-xs transition-colors"
                           >
                             {card.label}
@@ -564,17 +597,7 @@ export default function SupportPage() {
               );
             })}
 
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-muted flex items-center gap-2 rounded-2xl rounded-bl-md px-4 py-3">
-                  <div className="flex gap-1">
-                    <span className="bg-muted-foreground/40 h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:0ms]" />
-                    <span className="bg-muted-foreground/40 h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:150ms]" />
-                    <span className="bg-muted-foreground/40 h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:300ms]" />
-                  </div>
-                </div>
-              </div>
-            )}
+            {isLoading && <ThinkingBubble />}
 
             {/* quick issue suggestions */}
             {showQuickIssues && (
@@ -615,31 +638,21 @@ export default function SupportPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={
-                  isEscalated
-                    ? "Message human agent..."
-                    : "Type your message..."
-                }
+                placeholder="Type your message..."
                 disabled={isLoading}
                 rows={1}
                 className="w-full resize-none border-none text-sm leading-relaxed shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ minHeight: "24px", maxHeight: "120px" }}
               />
             </div>
-            <div className="flex items-center justify-between px-2 pb-2">
-              <div className="flex items-center gap-1 pl-1">
-                {!isEscalated && messages.length > 2 && (
-                  <button
-                    onClick={handleEscalate}
-                    className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors"
-                  >
-                    <UserCircle className="h-3 w-3" />
-                    Escalate
-                  </button>
-                )}
-              </div>
+            <div className="flex items-center justify-end px-2 pb-2">
               {isLoading ? (
-                <Button size="icon" variant="ghost" className="h-8 w-8" disabled>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8"
+                  disabled
+                >
                   <Loader2 className="h-4 w-4 animate-spin" />
                 </Button>
               ) : (
@@ -669,6 +682,90 @@ export default function SupportPage() {
             </span>
           </div>
         </div>
+      </div>
+
+      {/* right: active shipments context panel */}
+      <div className="hidden w-72 flex-col border-l xl:flex">
+        <div className="shrink-0 border-b px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Package className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium">Your Shipments</span>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            Agent has context about all your shipments
+          </p>
+        </div>
+        <ScrollArea className="flex-1">
+          {shipments.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-4">
+              <Package className="h-6 w-6 text-muted-foreground/30" />
+              <p className="mt-2 text-xs text-muted-foreground/50 text-center">
+                No active shipments
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-0">
+              {shipments.map((s) => {
+                const statusColors: Record<string, string> = {
+                  pending: "bg-yellow-500",
+                  picked_up: "bg-blue-500",
+                  in_transit: "bg-blue-500",
+                  at_warehouse: "bg-purple-500",
+                  out_for_delivery: "bg-cyan-500",
+                  delivered: "bg-emerald-500",
+                  delayed: "bg-red-500",
+                  cancelled: "bg-zinc-500",
+                };
+                return (
+                  <div
+                    key={s._id}
+                    className="border-b border-border/30 px-4 py-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium font-mono truncate">
+                        {s.tracking_id}
+                      </span>
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full shrink-0",
+                          statusColors[s.status] || "bg-zinc-400"
+                        )}
+                      />
+                    </div>
+                    <p className="text-muted-foreground mt-0.5 text-[11px] truncate">
+                      {s.origin?.city || "?"} → {s.destination?.city || "?"}
+                    </p>
+                    <div className="mt-1 flex items-center gap-2 flex-wrap">
+                      <span className="text-muted-foreground text-[10px] capitalize">
+                        {s.status.replace(/_/g, " ")}
+                      </span>
+                      {s.delay > 0 && (
+                        <span className="text-[10px] text-red-500">
+                          +{Math.round(s.delay / 60)}h delay
+                        </span>
+                      )}
+                      {s.sla_breached && (
+                        <span className="text-[10px] text-red-600 font-medium">
+                          SLA
+                        </span>
+                      )}
+                      {s.risk_score > 40 && (
+                        <span className="text-[10px] text-orange-500">
+                          Risk: {s.risk_score}
+                        </span>
+                      )}
+                    </div>
+                    {s.carrier && (
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                        Carrier: {s.carrier.name}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </ScrollArea>
       </div>
     </div>
   );
