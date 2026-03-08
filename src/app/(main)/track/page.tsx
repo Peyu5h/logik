@@ -53,6 +53,7 @@ const CITY_COORDS: Record<string, [number, number]> = {
   Lucknow: [80.9462, 26.8467],
   Solapur: [75.9064, 17.6599],
   Nagpur: [79.0882, 21.1458],
+  Ghaziabad: [77.4538, 28.6692],
 };
 
 function getCityCoords(cityName: string | undefined): [number, number] | null {
@@ -65,6 +66,37 @@ function getCityCoords(cityName: string | undefined): [number, number] | null {
   return key ? CITY_COORDS[key] : null;
 }
 
+// builds full route coords: origin -> waypoints (sorted) -> destination
+function getFullRouteCoords(shipment: Shipment): [number, number][] {
+  const coords: [number, number][] = [];
+
+  const originCoords =
+    shipment.origin.lat && shipment.origin.lng
+      ? ([shipment.origin.lng, shipment.origin.lat] as [number, number])
+      : getCityCoords(shipment.origin.city);
+  if (originCoords) coords.push(originCoords);
+
+  const waypoints = shipment.route_waypoints || [];
+  const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+  for (const wp of sorted) {
+    if (wp.lat && wp.lng) {
+      coords.push([wp.lng, wp.lat]);
+    } else {
+      const c = getCityCoords(wp.city);
+      if (c) coords.push(c);
+    }
+  }
+
+  const destCoords =
+    shipment.destination.lat && shipment.destination.lng
+      ? ([shipment.destination.lng, shipment.destination.lat] as [number, number])
+      : getCityCoords(shipment.destination.city);
+  if (destCoords) coords.push(destCoords);
+
+  return coords;
+}
+
+// approximate position based on shipment status
 function getShipmentCoords(shipment: Shipment): {
   origin: [number, number] | null;
   destination: [number, number] | null;
@@ -80,6 +112,7 @@ function getShipmentCoords(shipment: Shipment): {
       ? ([shipment.destination.lng, shipment.destination.lat] as [number, number])
       : getCityCoords(shipment.destination.city);
 
+  // if backend already set current_location, use it
   let currentCoords: [number, number] | null = null;
   if (shipment.current_location?.lat && shipment.current_location?.lng) {
     currentCoords = [shipment.current_location.lng, shipment.current_location.lat];
@@ -87,16 +120,111 @@ function getShipmentCoords(shipment: Shipment): {
     currentCoords = getCityCoords(shipment.current_location.city);
   }
 
-  if (
-    !currentCoords &&
-    originCoords &&
-    destCoords &&
-    shipment.status === "in_transit"
-  ) {
-    currentCoords = [
-      originCoords[0] + (destCoords[0] - originCoords[0]) * 0.45,
-      originCoords[1] + (destCoords[1] - originCoords[1]) * 0.45,
-    ];
+  // derive position from status + route waypoints when no explicit location
+  if (!currentCoords) {
+    const waypoints = shipment.route_waypoints || [];
+    const sorted = [...waypoints].sort((a, b) => a.order - b.order);
+
+    switch (shipment.status) {
+      case "pending": {
+        // at origin
+        currentCoords = originCoords;
+        break;
+      }
+
+      case "in_transit": {
+        // midpoint between last completed waypoint (or origin) and next pending waypoint (or destination)
+        const lastCompleted = [...sorted].reverse().find((wp) => wp.status === "completed");
+        const nextPending = sorted.find((wp) => wp.status === "pending" || wp.status === "in_transit");
+
+        const fromCoord = lastCompleted
+          ? (lastCompleted.lat && lastCompleted.lng ? [lastCompleted.lng, lastCompleted.lat] as [number, number] : getCityCoords(lastCompleted.city))
+          : originCoords;
+
+        const toCoord = nextPending
+          ? (nextPending.lat && nextPending.lng ? [nextPending.lng, nextPending.lat] as [number, number] : getCityCoords(nextPending.city))
+          : destCoords;
+
+        if (fromCoord && toCoord) {
+          currentCoords = [
+            fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.5,
+            fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.5,
+          ];
+        } else if (originCoords && destCoords) {
+          // fallback: interpolate along full route
+          const fullRoute = getFullRouteCoords(shipment);
+          if (fullRoute.length >= 2) {
+            const midIdx = Math.floor(fullRoute.length * 0.45);
+            const a = fullRoute[Math.min(midIdx, fullRoute.length - 2)];
+            const b = fullRoute[Math.min(midIdx + 1, fullRoute.length - 1)];
+            currentCoords = [a[0] + (b[0] - a[0]) * 0.5, a[1] + (b[1] - a[1]) * 0.5];
+          } else {
+            currentCoords = [
+              originCoords[0] + (destCoords[0] - originCoords[0]) * 0.45,
+              originCoords[1] + (destCoords[1] - originCoords[1]) * 0.45,
+            ];
+          }
+        }
+        break;
+      }
+
+      case "at_warehouse": {
+        // at the last completed waypoint (the warehouse we just arrived at)
+        const arrivedWp = [...sorted].reverse().find((wp) => wp.status === "completed");
+        if (arrivedWp) {
+          currentCoords = arrivedWp.lat && arrivedWp.lng
+            ? [arrivedWp.lng, arrivedWp.lat]
+            : getCityCoords(arrivedWp.city);
+        }
+        break;
+      }
+
+      case "out_for_delivery": {
+        // near destination — 85% of the way from last waypoint to destination
+        const lastWp = sorted[sorted.length - 1];
+        const fromCoord = lastWp
+          ? (lastWp.lat && lastWp.lng ? [lastWp.lng, lastWp.lat] as [number, number] : getCityCoords(lastWp.city))
+          : originCoords;
+
+        if (fromCoord && destCoords) {
+          currentCoords = [
+            fromCoord[0] + (destCoords[0] - fromCoord[0]) * 0.85,
+            fromCoord[1] + (destCoords[1] - fromCoord[1]) * 0.85,
+          ];
+        }
+        break;
+      }
+
+      case "delivered": {
+        currentCoords = destCoords;
+        break;
+      }
+
+      // delayed — same logic as in_transit (shipment stays in_transit conceptually)
+      case "delayed": {
+        const lastCompleted = [...sorted].reverse().find((wp) => wp.status === "completed");
+        const nextPending = sorted.find((wp) => wp.status === "pending" || wp.status === "in_transit");
+
+        const fromCoord = lastCompleted
+          ? (lastCompleted.lat && lastCompleted.lng ? [lastCompleted.lng, lastCompleted.lat] as [number, number] : getCityCoords(lastCompleted.city))
+          : originCoords;
+
+        const toCoord = nextPending
+          ? (nextPending.lat && nextPending.lng ? [nextPending.lng, nextPending.lat] as [number, number] : getCityCoords(nextPending.city))
+          : destCoords;
+
+        if (fromCoord && toCoord) {
+          currentCoords = [
+            fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.5,
+            fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.5,
+          ];
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
   }
 
   return { origin: originCoords, destination: destCoords, current: currentCoords };
@@ -284,11 +412,45 @@ export default function TrackPage() {
           markersRef.current.push(marker);
         }
 
-        // route line for selected
+        // waypoint markers for selected shipment
+        if (isSelected) {
+          const wpList = shipment.route_waypoints || [];
+          const sortedWps = [...wpList].sort((a, b) => a.order - b.order);
+          sortedWps.forEach((wp) => {
+            const wpCoord = wp.lat && wp.lng
+              ? [wp.lng, wp.lat] as [number, number]
+              : getCityCoords(wp.city);
+            if (!wpCoord) return;
+
+            const isCompleted = wp.status === "completed";
+            const isActive = wp.status === "in_transit";
+            const size = isActive ? 12 : 10;
+            const color = isCompleted ? "#10b981" : isActive ? sc.markerColor : "#94a3b8";
+
+            const el = document.createElement("div");
+            el.style.cssText = `width:${size}px;height:${size}px;border-radius:2px;transform:rotate(45deg);background:${color};border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,0.3);cursor:pointer;`;
+
+            const marker = new mapboxgl.Marker({ element: el, anchor: "center" })
+              .setLngLat(wpCoord)
+              .addTo(map);
+            markersRef.current.push(marker);
+
+            // label
+            const label = document.createElement("div");
+            label.style.cssText = `font-size:9px;color:${color};white-space:nowrap;text-shadow:0 0 3px rgba(0,0,0,0.5);font-weight:500;`;
+            label.textContent = wp.city || wp.warehouse_code;
+            const labelMarker = new mapboxgl.Marker({ element: label, anchor: "top" })
+              .setLngLat(wpCoord)
+              .setOffset([0, 10])
+              .addTo(map);
+            markersRef.current.push(labelMarker);
+          });
+        }
+
+        // full multi-hop route line for selected
         if (isSelected && coords.origin && coords.destination) {
-          const routeCoords: [number, number][] = [coords.origin];
-          if (coords.current) routeCoords.push(coords.current);
-          routeCoords.push(coords.destination);
+          const fullRoute = getFullRouteCoords(shipment);
+          const routeCoords = fullRoute.length >= 2 ? fullRoute : [coords.origin, coords.destination];
 
           const sourceId = `route-${shipment._id}`;
 
@@ -312,14 +474,57 @@ export default function TrackPage() {
               paint: {
                 "line-color": sc.markerColor,
                 "line-width": 3,
-                "line-opacity": 0.8,
+                "line-opacity": 0.5,
+                "line-dasharray": [2, 2],
               },
             });
 
             sourcesAdded.current.add(sourceId);
 
-            // completed portion
-            if (coords.current) {
+            // completed portion — origin through completed waypoints
+            const wpList = shipment.route_waypoints || [];
+            const sortedWps = [...wpList].sort((a, b) => a.order - b.order);
+            const completedWps = sortedWps.filter((wp) => wp.status === "completed");
+            if (completedWps.length > 0) {
+              const completedCoords: [number, number][] = [coords.origin];
+              for (const wp of completedWps) {
+                const c = wp.lat && wp.lng
+                  ? [wp.lng, wp.lat] as [number, number]
+                  : getCityCoords(wp.city);
+                if (c) completedCoords.push(c);
+              }
+              // add current position if in transit
+              if (coords.current) completedCoords.push(coords.current);
+
+              if (completedCoords.length >= 2) {
+                const completedId = `done-${shipment._id}`;
+                map.addSource(completedId, {
+                  type: "geojson",
+                  data: {
+                    type: "Feature",
+                    properties: {},
+                    geometry: {
+                      type: "LineString",
+                      coordinates: completedCoords,
+                    },
+                  },
+                });
+
+                map.addLayer({
+                  id: `${completedId}-line`,
+                  type: "line",
+                  source: completedId,
+                  paint: {
+                    "line-color": "#10b981",
+                    "line-width": 3.5,
+                    "line-opacity": 0.9,
+                  },
+                });
+
+                sourcesAdded.current.add(completedId);
+              }
+            } else if (coords.current) {
+              // no completed waypoints yet but we have a current location
               const completedId = `done-${shipment._id}`;
               map.addSource(completedId, {
                 type: "geojson",

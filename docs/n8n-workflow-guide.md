@@ -374,27 +374,28 @@ In n8n, add an HTTP Request node:
 
 These are enforced by the backend trigger controller, not n8n. n8n receives the results.
 
-| Delay Threshold | Automatic Action                       |
-|-----------------|----------------------------------------|
-| 2 hours (120m)  | Carrier reassigned to best available   |
-| 6 hours (360m)  | Email notification sent to consumer    |
-| 10 hours (600m) | Warehouse reroute + new carrier        |
-| SLA breach      | Auto-escalate + email notification     |
+| Delay Threshold | Automatic Action                                                    |
+|-----------------|---------------------------------------------------------------------|
+| 2 hours (120m)  | Notification sent. Carrier auto-assigned ONLY if shipment is pending |
+| 4 hours (240m)  | Email sent to consumer with delay details                           |
+| 6 hours (360m)  | Carrier swapped at next warehouse arrival                           |
+| SLA breach      | Auto-escalate to urgent + email notification                        |
+
+> Shipments stay `in_transit` during delays — they are never set to `delayed` status.
 
 ---
 
 ## Trigger Types and Their Effects
 
-| Trigger               | Delay Added | Risk Delta | Severity | Auto Actions              |
-|-----------------------|-------------|------------|----------|---------------------------|
-| late_pickup           | +120 min    | +15        | medium   | Carrier reassign at 2hr   |
-| carrier_breakdown     | +240 min    | +30        | critical | Emergency reassign        |
-| warehouse_congestion  | +180 min    | +20        | high     | —                         |
-| weather_disruption    | +300 min    | +25        | high     | —                         |
-| customs_hold          | +360 min    | +20        | high     | Email at 6hr threshold    |
-| inaccurate_ETA        | +90 min     | +10        | medium   | —                         |
-| SLA_BREACH            | +480 min    | +40        | critical | Escalate + email          |
-| resolve               | reset to 0  | reset to 0 | low      | Clear all flags           |
+| Trigger               | Effect                                                                 |
+|-----------------------|------------------------------------------------------------------------|
+| delay                 | +120 min delay, +20 risk. 2hr=notify, 4hr=email, 6hr=carrier swap flag |
+| set_in_transit        | Sets shipment to in_transit. User-initiated only                       |
+| arrived_warehouse     | Advances to next waypoint. Swaps carrier if delay >= 6hrs (360min)     |
+| congestion            | Sets warehouse to 100%. Reroutes shipments to nearest warehouse        |
+| SLA_BREACH            | Auto-escalate to urgent + email                                        |
+| resolve               | Reset delay/risk to 0, clear all flags                                 |
+| reset_demo            | Reset to seed state (admin only, no webhook)                           |
 
 ---
 

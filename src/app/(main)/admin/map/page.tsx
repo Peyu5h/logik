@@ -51,8 +51,9 @@ const CITY_COORDS: Record<string, [number, number]> = {
   "Ahmedabad": [72.5714, 23.0225],
   "Jaipur": [75.7873, 26.9124],
   "Lucknow": [80.9462, 26.8467],
-  "Solapur": [75.9064, 17.6599],
-  "Nagpur": [79.0882, 21.1458],
+  Solapur: [75.9064, 17.6599],
+  Nagpur: [79.0882, 21.1458],
+  Ghaziabad: [77.4538, 28.6692],
 };
 
 function getCityCoords(cityName: string | undefined): [number, number] | null {

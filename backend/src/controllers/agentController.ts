@@ -53,6 +53,7 @@ export const observe = async (_req: Request, res: Response) => {
       recipientName: s.recipientName,
       recipientPhone: s.recipientPhone,
       agentNotes: s.agentNotes,
+      routeWaypoints: (s as any).routeWaypoints || [],
       updatedAt: s.updatedAt,
     }));
 
