@@ -843,6 +843,24 @@ export const createSupportTicket = async (req: Request, res: Response) => {
       return ApiResponse.error(res, "message.content is required", 400);
     }
 
+    // lookup consumer name so admin support page shows real names
+    let consumerName: string | null = null;
+    let consumerEmail: string | null = null;
+    if (consumer_id) {
+      try {
+        const consumer = await prisma.user.findUnique({
+          where: { id: consumer_id },
+          select: { name: true, email: true },
+        });
+        if (consumer) {
+          consumerName = consumer.name;
+          consumerEmail = consumer.email;
+        }
+      } catch {
+        // silent - proceed without name
+      }
+    }
+
     const ticketId = `TKT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 5).toUpperCase()}`;
 
     // create ticket in db
@@ -865,6 +883,8 @@ export const createSupportTicket = async (req: Request, res: Response) => {
       data: {
         sessionId: ticketId,
         visitorId: consumer_id || null,
+        visitorName: consumerName,
+        visitorEmail: consumerEmail,
         status: "open",
         channel: "support",
         metadata: {

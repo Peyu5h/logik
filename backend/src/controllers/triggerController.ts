@@ -945,15 +945,18 @@ async function handleCongestion(req: Request, res: Response) {
         };
       }
 
-      // auto-reassign carrier: pick best available carrier for the destination region
-      const destRegion = (shipment as any).destination?.region || "";
-      const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
-      if (bestCarrier) {
-        shipUpdateData.previousCarrierId = shipment.carrierId;
-        shipUpdateData.carrierId = bestCarrier.id;
+      // auto-reassign carrier only if it wasn't already swapped recently
+      // previousCarrierId being set means arrived_warehouse or delay already swapped it
+      if (!shipment.previousCarrierId) {
+        const destRegion = (shipment as any).destination?.region || "";
+        const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
+        if (bestCarrier && bestCarrier.id !== shipment.carrierId) {
+          shipUpdateData.previousCarrierId = shipment.carrierId;
+          shipUpdateData.carrierId = bestCarrier.id;
 
-        if (shipment.carrierId) {
-          await degradeCarrierReliability(shipment.carrierId, 5, "congestion_reroute");
+          if (shipment.carrierId) {
+            await degradeCarrierReliability(shipment.carrierId, 5, "congestion_reroute");
+          }
         }
       }
 

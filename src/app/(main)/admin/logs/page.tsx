@@ -253,6 +253,7 @@ export default function LogsPage() {
   const [localLogs, setLocalLogs] = useState<SystemLog[]>([]);
   const [loadingTriggers, setLoadingTriggers] = useState<Record<string, boolean>>({});
   const [newLogIds, setNewLogIds] = useState<Set<string>>(new Set());
+  const [isResettingAll, setIsResettingAll] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
 
   const [demoShipments, setDemoShipments] = useState<ShipmentState[]>([]);
@@ -490,6 +491,34 @@ export default function LogsPage() {
     clearLogs.mutate();
   };
 
+  // resets all 3 demo cases, carriers, and warehouses to seed state
+  const handleResetAll = async () => {
+    setIsResettingAll(true);
+    try {
+      for (const cid of [1, 2, 3]) {
+        const res = await fetch(`${API_BASE_URL}/api/triggers/${cid}/reset_demo`, { method: "POST" });
+        if (res.ok) {
+          const result = await res.json();
+          addLocalLog({
+            id: `local-reset-${cid}-${Date.now().toString(36)}`,
+            timestamp: new Date().toISOString(),
+            event_type: "trigger_reset_demo",
+            source: "admin_panel",
+            severity: "low",
+            message: `Case ${cid}: ${result.data?.message || "Reset to demo state"}`,
+          });
+        }
+      }
+      toast.success("All cases reset to demo state");
+      await fetchShipments();
+      refetch();
+    } catch {
+      toast.error("Failed to reset demo");
+    } finally {
+      setIsResettingAll(false);
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
       {/* center: logs panel */}
@@ -609,9 +638,30 @@ export default function LogsPage() {
       {/* right: trigger cards panel */}
       <div className="hidden w-80 shrink-0 border-l lg:flex flex-col overflow-hidden">
         <div className="shrink-0 border-b px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Triggers</h2>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">Triggers</h2>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-[11px] gap-1.5"
+              disabled={isResettingAll}
+              onClick={handleResetAll}
+            >
+              {isResettingAll ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Resetting...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="h-3 w-3" />
+                  Reset All
+                </>
+              )}
+            </Button>
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground truncate">
             Fire events on Case {selectedCaseId}

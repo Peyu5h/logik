@@ -426,12 +426,7 @@ export default function AdminDashboard() {
                   disabled={isResettingCongestion}
                   className="h-6 gap-1 text-[10px] px-2"
                 >
-                  {isResettingCongestion ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <RotateCcw className="h-3 w-3" />
-                  )}
-                  Reset Congestion
+                  Reset
                 </Button>
               </div>
               <div className="flex items-center gap-1">

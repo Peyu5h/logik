@@ -89,7 +89,7 @@ export default function AdminSupportPage() {
   const [isSending, setIsSending] = useState(false);
   const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "escalated" | "resolved">("escalated");
   const [search, setSearch] = useState("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -119,12 +119,13 @@ export default function AdminSupportPage() {
     }
   }, [input]);
 
-  // fetch chats from the chats collection
+  // fetch chats - only escalated by default
   const fetchChats = useCallback(async () => {
     try {
       const params = new URLSearchParams();
-      if (filter === "open") params.set("status", "open");
-      if (filter === "resolved") params.set("status", "resolved");
+      if (filter === "escalated") params.set("status", "escalated");
+      else if (filter === "open") params.set("status", "open");
+      else if (filter === "resolved") params.set("status", "resolved");
 
       const res = await fetch(
         `${API_BASE_URL}/api/admin/chats?${params.toString()}`
@@ -268,13 +269,13 @@ export default function AdminSupportPage() {
       <div className="flex w-80 flex-col border-r overflow-hidden">
         <div className="shrink-0 border-b px-4 py-3">
           <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <Headphones className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">Support Chats</span>
-              <span className="text-[10px] text-muted-foreground">
-                ({chats.length})
-              </span>
-            </div>
+          <div className="flex items-center gap-2">
+            <Headphones className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-semibold">Escalated Chats</span>
+            <span className="text-[10px] text-muted-foreground">
+              ({chats.length})
+            </span>
+          </div>
             <Button
               variant="ghost"
               size="sm"
@@ -303,6 +304,7 @@ export default function AdminSupportPage() {
           <div className="flex items-center gap-1">
             {(
               [
+                { value: "escalated", label: "Escalated" },
                 { value: "all", label: "All" },
                 { value: "open", label: "Open" },
                 { value: "resolved", label: "Resolved" },
@@ -338,10 +340,10 @@ export default function AdminSupportPage() {
             <div className="flex flex-col items-center justify-center py-16">
               <MessageCircle className="h-8 w-8 text-muted-foreground/30" />
               <p className="mt-2 text-sm text-muted-foreground">
-                No chats found
+                No escalated chats
               </p>
               <p className="mt-1 text-xs text-muted-foreground/60 text-center px-6">
-                Chats from the n8n agent will appear here
+                Escalated conversations from users will appear here
               </p>
             </div>
           ) : (
@@ -349,6 +351,7 @@ export default function AdminSupportPage() {
               const isActive = chat._id === selectedId;
               const sc =
                 statusColors[chat.status] || statusColors.open;
+              const displayName = chat.visitor_name || chat.visitor_email || chat.session_id.slice(0, 12);
 
               return (
                 <div
@@ -382,7 +385,7 @@ export default function AdminSupportPage() {
                   <div className="flex items-center gap-1.5 mb-0.5">
                     <UserCircle className="h-3 w-3 text-muted-foreground shrink-0" />
                     <p className="text-xs font-medium truncate">
-                      {chat.visitor_name || chat.visitor_email || "Anonymous"}
+                      {displayName}
                     </p>
                   </div>
 
@@ -427,8 +430,8 @@ export default function AdminSupportPage() {
                 </div>
                 <div className="min-w-0">
                   <h1 className="text-foreground text-sm font-medium truncate">
-                    {selected.visitor_name || selected.visitor_email || "Anonymous"}
-                  </h1>
+                          {selected.visitor_name || selected.visitor_email || selected.session_id.slice(0, 16)}
+                        </h1>
                   <p className="text-muted-foreground text-[10px] truncate">
                     {selected.session_id.slice(0, 16)}... &middot;{" "}
                     {selected.channel} &middot; {selected.message_count} msgs
@@ -641,8 +644,8 @@ export default function AdminSupportPage() {
                   Visitor
                 </p>
                 <p className="text-sm font-medium">
-                  {selected.visitor_name || "Anonymous"}
-                </p>
+                    {selected.visitor_name || selected.visitor_email || selected.session_id.slice(0, 16)}
+                  </p>
                 {selected.visitor_email && (
                   <p className="text-xs text-muted-foreground">
                     {selected.visitor_email}

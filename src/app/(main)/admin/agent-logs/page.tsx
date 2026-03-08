@@ -1,90 +1,37 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import {
-  Eye,
-  Crosshair,
-  TrendingUp,
-  Zap,
-  BookOpen,
-  RefreshCw,
-  Loader2,
-  ChevronDown,
-  ChevronRight,
-  Clock,
-  Activity,
-  Search,
-  CheckCircle2,
-  AlertTriangle,
-  Package,
-  Timer,
-  Hash,
-  Filter,
-} from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { cn } from "~/lib/utils";
-import { motion, AnimatePresence } from "framer-motion";
 import type { AgentExecutionLog } from "~/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
-interface OODAStep {
-  key: "observe" | "reason" | "decide" | "act" | "learn";
-  label: string;
-  icon: React.ReactNode;
-  color: string;
-  bgColor: string;
-  borderColor: string;
-}
+const OODA_KEYS = ["observe", "reason", "decide", "act", "learn"] as const;
 
-const OODA_STEPS: OODAStep[] = [
-  {
-    key: "observe",
-    label: "Observe",
-    icon: <Eye className="h-3 w-3" />,
-    color: "text-sky-400",
-    bgColor: "bg-sky-500/8",
-    borderColor: "border-sky-500/15",
-  },
-  {
-    key: "reason",
-    label: "Reason",
-    icon: <TrendingUp className="h-3 w-3" />,
-    color: "text-amber-400",
-    bgColor: "bg-amber-500/8",
-    borderColor: "border-amber-500/15",
-  },
-  {
-    key: "decide",
-    label: "Decide",
-    icon: <Crosshair className="h-3 w-3" />,
-    color: "text-violet-400",
-    bgColor: "bg-violet-500/8",
-    borderColor: "border-violet-500/15",
-  },
-  {
-    key: "act",
-    label: "Act",
-    icon: <Zap className="h-3 w-3" />,
-    color: "text-emerald-400",
-    bgColor: "bg-emerald-500/8",
-    borderColor: "border-emerald-500/15",
-  },
-  {
-    key: "learn",
-    label: "Learn",
-    icon: <BookOpen className="h-3 w-3" />,
-    color: "text-rose-400",
-    bgColor: "bg-rose-500/8",
-    borderColor: "border-rose-500/15",
-  },
-];
+const OODA_LABELS: Record<string, string> = {
+  observe: "Observe",
+  reason: "Reason",
+  decide: "Decide",
+  act: "Act",
+  learn: "Learn",
+};
+
+const TRIGGER_LABELS: Record<string, string> = {
+  delay: "Delay",
+  congestion: "Congestion",
+  sla_breach: "SLA Breach",
+  set_in_transit: "In Transit",
+  arrived_warehouse: "Arrived WH",
+  monitoring: "Monitoring",
+  reroute: "Reroute",
+};
 
 function formatTimestamp(ts: string) {
   const d = new Date(ts);
-  if (isNaN(d.getTime())) return "—";
+  if (isNaN(d.getTime())) return "-";
   return d.toLocaleString([], {
     month: "short",
     day: "numeric",
@@ -97,152 +44,32 @@ function formatTimestamp(ts: string) {
 
 function formatRelativeTime(ts: string) {
   const d = new Date(ts);
-  if (isNaN(d.getTime())) return "—";
+  if (isNaN(d.getTime())) return "-";
   const diff = Date.now() - d.getTime();
-  const minutes = Math.floor(diff / 60000);
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return "just now";
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
 }
 
-function getStatusColor(status: string) {
-  if (status === "completed") return "text-emerald-400";
-  if (status === "failed") return "text-red-400";
-  return "text-amber-400";
+function getTriggerLabel(t: string | null) {
+  if (!t) return "General";
+  return TRIGGER_LABELS[t] || t.replace(/_/g, " ");
 }
 
-function getStatusDot(status: string) {
-  if (status === "completed") return "bg-emerald-500";
-  if (status === "failed") return "bg-red-500";
-  return "bg-amber-500";
+function statusText(s: string) {
+  if (s === "completed") return "completed";
+  if (s === "failed") return "failed";
+  return "pending";
 }
 
-const TRIGGER_MAP: Record<string, { label: string; color: string; bg: string; border: string }> = {
-  delay: { label: "Delay", color: "text-orange-300", bg: "bg-orange-500/8", border: "border-orange-500/20" },
-  congestion: { label: "Congestion", color: "text-amber-300", bg: "bg-amber-500/8", border: "border-amber-500/20" },
-  sla_breach: { label: "SLA Breach", color: "text-red-300", bg: "bg-red-500/8", border: "border-red-500/20" },
-  set_in_transit: { label: "In Transit", color: "text-sky-300", bg: "bg-sky-500/8", border: "border-sky-500/20" },
-  arrived_warehouse: { label: "Arrived WH", color: "text-violet-300", bg: "bg-violet-500/8", border: "border-violet-500/20" },
-  monitoring: { label: "Monitoring", color: "text-emerald-300", bg: "bg-emerald-500/8", border: "border-emerald-500/20" },
-  reroute: { label: "Reroute", color: "text-cyan-300", bg: "bg-cyan-500/8", border: "border-cyan-500/20" },
-};
-
-function getTriggerInfo(triggerType: string | null) {
-  if (!triggerType) return { label: "General", color: "text-muted-foreground", bg: "bg-muted/30", border: "border-border/30" };
-  return TRIGGER_MAP[triggerType] || {
-    label: triggerType.replace(/_/g, " "),
-    color: "text-muted-foreground",
-    bg: "bg-muted/30",
-    border: "border-border/30",
-  };
-}
-
-// horizontal ooda step cards
-function OODAStepPill({
-  step,
-  content,
-}: {
-  step: OODAStep;
-  content: string | null;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  if (!content) return null;
-
-  const preview = content.length > 120 ? content.substring(0, 120) + "..." : content;
-
-  return (
-    <div className={cn("min-w-[220px] max-w-[320px] shrink-0 rounded-lg border p-3", step.borderColor, step.bgColor)}>
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <div className={cn("flex h-5 w-5 items-center justify-center rounded", step.color)}>
-          {step.icon}
-        </div>
-        <span className={cn("text-[10px] font-semibold uppercase tracking-wider", step.color)}>
-          {step.label}
-        </span>
-      </div>
-      <p className="text-[11px] leading-relaxed text-muted-foreground/80">
-        {expanded ? content : preview}
-      </p>
-      {content.length > 120 && (
-        <button
-          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-          className={cn("mt-1 text-[10px] font-medium", step.color, "hover:underline")}
-        >
-          {expanded ? "show less" : "show more"}
-        </button>
-      )}
-    </div>
-  );
-}
-
-// vertical ooda timeline for expanded view
-function OODATimeline({ log }: { log: AgentExecutionLog }) {
-  const stepsWithContent = OODA_STEPS.filter((s) => log[s.key]);
-  if (stepsWithContent.length === 0) return null;
-
-  return (
-    <div className="space-y-0">
-      {stepsWithContent.map((step, idx) => {
-        const content = log[step.key];
-        if (!content) return null;
-        const isLast = idx === stepsWithContent.length - 1;
-        return <OODATimelineStep key={step.key} step={step} content={content} isLast={isLast} />;
-      })}
-    </div>
-  );
-}
-
-function OODATimelineStep({
-  step,
-  content,
-  isLast,
-}: {
-  step: OODAStep;
-  content: string;
-  isLast: boolean;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const isLong = content.length > 200;
-  const displayContent = isLong && !expanded ? content.substring(0, 200) + "..." : content;
-
-  return (
-    <div className="flex gap-2.5">
-      <div className="flex flex-col items-center">
-        <div
-          className={cn(
-            "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
-            step.bgColor, step.borderColor, step.color
-          )}
-        >
-          {step.icon}
-        </div>
-        {!isLast && <div className="w-px flex-1 bg-border/30 min-h-2" />}
-      </div>
-      <div className={cn("flex-1 pb-2.5", isLast && "pb-0")}>
-        <span className={cn("text-[10px] font-semibold uppercase tracking-wider", step.color)}>
-          {step.label}
-        </span>
-        <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground/80">
-          {displayContent}
-          {isLong && (
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className={cn("ml-1 font-medium hover:underline", step.color)}
-            >
-              {expanded ? "less" : "more"}
-            </button>
-          )}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// single log card
-function LogCard({
+// single log entry rendered as a vertical card on the timeline
+function LogEntry({
   log,
   isExpanded,
   onToggle,
@@ -251,165 +78,135 @@ function LogCard({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const trigger = getTriggerInfo(log.trigger_type);
-  const stepsWithContent = OODA_STEPS.filter((s) => log[s.key]);
-  const stepCount = stepsWithContent.length;
+  const stepsWithContent = OODA_KEYS.filter((k) => log[k]);
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.15 }}
-      className={cn(
-        "rounded-xl border transition-colors duration-150",
-        isExpanded
-          ? "bg-card border-border/60"
-          : "bg-card/50 border-border/30 hover:border-border/50 hover:bg-card/70"
-      )}
-    >
-      {/* header */}
-      <button onClick={onToggle} className="w-full text-left">
-        <div className="flex items-start gap-3 px-4 py-3">
-          {/* status dot */}
-          <div className="mt-1.5 shrink-0">
-            <div className={cn("h-2 w-2 rounded-full", getStatusDot(log.status))} />
-          </div>
+    <div className="relative pl-6">
+      {/* timeline dot */}
+      <div
+        className={cn(
+          "absolute left-0 top-3 h-2.5 w-2.5 rounded-full border-2 z-10",
+          log.status === "completed"
+            ? "bg-emerald-500 border-emerald-500/50"
+            : log.status === "failed"
+              ? "bg-red-500 border-red-500/50"
+              : "bg-amber-500 border-amber-500/50"
+        )}
+      />
 
-          {/* main info */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={cn(
-                "text-[10px] font-medium px-1.5 py-0.5 rounded border",
-                trigger.bg, trigger.color, trigger.border
-              )}>
-                {trigger.label}
-              </span>
-
-              {log.shipment_id && (
-                <span className="text-[10px] text-muted-foreground/50 font-mono flex items-center gap-0.5">
-                  <Package className="h-2.5 w-2.5" />
-                  {log.shipment_id.substring(0, 8)}
-                </span>
-              )}
-
-              <span className={cn("text-[10px] capitalize", getStatusColor(log.status))}>
-                {log.status}
-              </span>
-            </div>
-
-            <p className="text-xs text-muted-foreground/70 mt-1 line-clamp-2 leading-relaxed">
-              {log.observe?.substring(0, 160) || "Agent execution cycle"}
-            </p>
-
-            {/* horizontal step pills preview (collapsed only) */}
-            {!isExpanded && stepCount > 0 && (
-              <div className="flex items-center gap-1 mt-2">
-                {OODA_STEPS.map((step) => (
-                  <div
-                    key={step.key}
-                    className={cn(
-                      "h-1 rounded-full transition-colors",
-                      log[step.key] ? "w-5" : "w-2",
-                      log[step.key]
-                        ? step.color.replace("text-", "bg-").replace("400", "500/50")
-                        : "bg-muted-foreground/10"
-                    )}
-                  />
-                ))}
-                <span className="text-[9px] text-muted-foreground/40 ml-1">
-                  {stepCount}/{OODA_STEPS.length} steps
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* right side meta */}
-          <div className="shrink-0 flex flex-col items-end gap-1">
-            <span className="text-[10px] text-muted-foreground/40">
-              {formatRelativeTime(log.created_at)}
+      <button
+        onClick={onToggle}
+        className={cn(
+          "w-full text-left rounded-lg border px-4 py-3 transition-colors",
+          isExpanded
+            ? "bg-card border-border/60"
+            : "bg-card/40 border-border/30 hover:bg-card/70 hover:border-border/50"
+        )}
+      >
+        {/* top row: trigger + status + time */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+              {getTriggerLabel(log.trigger_type)}
             </span>
+            {log.shipment_id && (
+              <span className="text-[10px] text-muted-foreground/50 font-mono">
+                {log.shipment_id.substring(0, 8)}
+              </span>
+            )}
+            <span
+              className={cn(
+                "text-[10px]",
+                log.status === "completed"
+                  ? "text-emerald-500"
+                  : log.status === "failed"
+                    ? "text-red-500"
+                    : "text-amber-500"
+              )}
+            >
+              {statusText(log.status)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
             {log.duration != null && (
-              <span className="text-[10px] text-muted-foreground/30 flex items-center gap-0.5">
-                <Timer className="h-2.5 w-2.5" />
+              <span className="text-[10px] text-muted-foreground/40">
                 {log.duration}ms
               </span>
             )}
-            <div className="text-muted-foreground/40">
-              {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            </div>
+            <span className="text-[10px] text-muted-foreground/50">
+              {formatRelativeTime(log.created_at)}
+            </span>
           </div>
         </div>
+
+        {/* preview line */}
+        <p className="text-xs text-muted-foreground/60 mt-1.5 line-clamp-2 leading-relaxed">
+          {log.observe?.substring(0, 180) || "Agent execution cycle"}
+        </p>
+
+        {/* step indicators when collapsed */}
+        {!isExpanded && stepsWithContent.length > 0 && (
+          <div className="flex items-center gap-1.5 mt-2">
+            {OODA_KEYS.map((k) => (
+              <div
+                key={k}
+                className={cn(
+                  "h-1 rounded-full",
+                  log[k] ? "w-5 bg-muted-foreground/30" : "w-2 bg-muted-foreground/10"
+                )}
+              />
+            ))}
+            <span className="text-[9px] text-muted-foreground/30 ml-1">
+              {stepsWithContent.length}/{OODA_KEYS.length}
+            </span>
+          </div>
+        )}
       </button>
 
-      {/* expanded detail */}
-      <AnimatePresence>
-        {isExpanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="px-4 pb-4 border-t border-border/30">
-              {/* meta chips */}
-              <div className="flex items-center gap-3 flex-wrap py-3">
-                <div className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
-                  <Clock className="h-3 w-3" />
-                  {formatTimestamp(log.created_at)}
-                </div>
-                {log.duration != null && (
-                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
-                    <Timer className="h-3 w-3" />
-                    {log.duration}ms
-                  </div>
-                )}
-                {log.status && (
-                  <div className="flex items-center gap-1 text-[10px]">
-                    {log.status === "completed" ? (
-                      <CheckCircle2 className="h-3 w-3 text-emerald-500/60" />
-                    ) : (
-                      <AlertTriangle className="h-3 w-3 text-amber-500/60" />
-                    )}
-                    <span className={cn("capitalize", getStatusColor(log.status))}>{log.status}</span>
-                  </div>
-                )}
-                {log.session_id && (
-                  <span className="text-[10px] text-muted-foreground/30 font-mono flex items-center gap-0.5">
-                    <Hash className="h-2.5 w-2.5" />
-                    {log.session_id.substring(0, 12)}
-                  </span>
-                )}
-              </div>
+      {/* expanded content */}
+      {isExpanded && (
+        <div className="mt-0 rounded-b-lg border border-t-0 border-border/40 bg-card px-4 pb-4">
+          {/* meta */}
+          <div className="flex items-center gap-3 flex-wrap py-3 border-b border-border/20 text-[10px] text-muted-foreground/50">
+            <span>{formatTimestamp(log.created_at)}</span>
+            {log.duration != null && <span>{log.duration}ms</span>}
+            {log.session_id && (
+              <span className="font-mono">{log.session_id.substring(0, 16)}</span>
+            )}
+          </div>
 
-              {/* horizontal ooda step cards */}
-              {stepsWithContent.length > 0 && (
-                <div className="overflow-x-auto pb-2 -mx-1">
-                  <div className="flex gap-2 px-1">
-                    {stepsWithContent.map((step) => (
-                      <OODAStepPill key={step.key} step={step} content={log[step.key]} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* metadata */}
-              {log.metadata && Object.keys(log.metadata).length > 0 && (
-                <div className="mt-3 rounded-lg border border-border/20 bg-muted/10 px-3 py-2">
-                  <p className="text-[9px] font-medium text-muted-foreground/40 uppercase tracking-wider mb-1">
-                    Metadata
+          {/* ooda steps as vertical list */}
+          <div className="mt-3 space-y-3">
+            {OODA_KEYS.map((key) => {
+              const content = log[key];
+              if (!content) return null;
+              return (
+                <div key={key}>
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 mb-1">
+                    {OODA_LABELS[key]}
                   </p>
-                  <pre className="text-[10px] text-muted-foreground/50 whitespace-pre-wrap font-mono leading-relaxed">
-                    {JSON.stringify(log.metadata, null, 2)}
-                  </pre>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground/80 whitespace-pre-wrap">
+                    {content}
+                  </p>
                 </div>
-              )}
+              );
+            })}
+          </div>
+
+          {/* metadata */}
+          {log.metadata && Object.keys(log.metadata).length > 0 && (
+            <div className="mt-3 rounded border border-border/20 bg-muted/10 px-3 py-2">
+              <p className="text-[9px] font-medium text-muted-foreground/40 uppercase tracking-wider mb-1">
+                metadata
+              </p>
+              <pre className="text-[10px] text-muted-foreground/50 whitespace-pre-wrap font-mono leading-relaxed">
+                {JSON.stringify(log.metadata, null, 2)}
+              </pre>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -425,42 +222,45 @@ export default function AgentExecutionsPage() {
   const [triggerFilter, setTriggerFilter] = useState("all");
   const loaderRef = useRef<HTMLDivElement>(null);
 
-  const fetchLogs = useCallback(async (pageNum: number, append = false) => {
-    if (append) {
-      setIsFetchingMore(true);
-    } else {
-      setIsLoading(true);
-    }
-    try {
-      const params = new URLSearchParams({
-        page: String(pageNum),
-        limit: "30",
-      });
-      if (triggerFilter !== "all") params.set("trigger_type", triggerFilter);
-
-      const res = await fetch(`${API_BASE_URL}/api/admin/agent-logs?${params}`);
-      const data = await res.json();
-
-      if (res.ok && data.data) {
-        const fetched = data.data.logs || [];
-        setLogs((prev) => (append ? [...prev, ...fetched] : fetched));
-        setTotal(data.data.total || 0);
-        setHasMore(data.data.hasMore || false);
+  const fetchLogs = useCallback(
+    async (pageNum: number, append = false) => {
+      if (append) {
+        setIsFetchingMore(true);
+      } else {
+        setIsLoading(true);
       }
-    } catch {
-      // silent
-    } finally {
-      setIsLoading(false);
-      setIsFetchingMore(false);
-    }
-  }, [triggerFilter]);
+      try {
+        const params = new URLSearchParams({
+          page: String(pageNum),
+          limit: "30",
+        });
+        if (triggerFilter !== "all") params.set("trigger_type", triggerFilter);
+
+        const res = await fetch(`${API_BASE_URL}/api/admin/agent-logs?${params}`);
+        const data = await res.json();
+
+        if (res.ok && data.data) {
+          const fetched = data.data.logs || [];
+          setLogs((prev) => (append ? [...prev, ...fetched] : fetched));
+          setTotal(data.data.total || 0);
+          setHasMore(data.data.hasMore || false);
+        }
+      } catch {
+        // silent
+      } finally {
+        setIsLoading(false);
+        setIsFetchingMore(false);
+      }
+    },
+    [triggerFilter]
+  );
 
   useEffect(() => {
     setPage(1);
     fetchLogs(1);
   }, [fetchLogs]);
 
-  // polling
+  // auto refresh
   useEffect(() => {
     const interval = setInterval(() => fetchLogs(1), 10000);
     return () => clearInterval(interval);
@@ -495,14 +295,15 @@ export default function AgentExecutionsPage() {
   const filteredLogs = useMemo(() => {
     if (!search) return logs;
     const q = search.toLowerCase();
-    return logs.filter((log) =>
-      log.observe?.toLowerCase().includes(q) ||
-      log.reason?.toLowerCase().includes(q) ||
-      log.decide?.toLowerCase().includes(q) ||
-      log.act?.toLowerCase().includes(q) ||
-      log.learn?.toLowerCase().includes(q) ||
-      log.trigger_type?.toLowerCase().includes(q) ||
-      log.shipment_id?.toLowerCase().includes(q)
+    return logs.filter(
+      (log) =>
+        log.observe?.toLowerCase().includes(q) ||
+        log.reason?.toLowerCase().includes(q) ||
+        log.decide?.toLowerCase().includes(q) ||
+        log.act?.toLowerCase().includes(q) ||
+        log.learn?.toLowerCase().includes(q) ||
+        log.trigger_type?.toLowerCase().includes(q) ||
+        log.shipment_id?.toLowerCase().includes(q)
     );
   }, [logs, search]);
 
@@ -518,22 +319,20 @@ export default function AgentExecutionsPage() {
     { value: "reroute", label: "Reroute" },
   ];
 
-  const completedCount = useMemo(() => logs.filter((l) => l.status === "completed").length, [logs]);
+  const completedCount = useMemo(
+    () => logs.filter((l) => l.status === "completed").length,
+    [logs]
+  );
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* header */}
       <div className="shrink-0 flex items-center justify-between border-b border-border/40 px-6 py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Activity className="h-4 w-4 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-base font-semibold tracking-tight">Agent Executions</h1>
-            <p className="text-muted-foreground/50 text-[11px]">
-              {total} total · {completedCount} completed
-            </p>
-          </div>
+        <div>
+          <h1 className="text-base font-semibold tracking-tight">Agent Logs</h1>
+          <p className="text-muted-foreground/50 text-[11px]">
+            {total} total, {completedCount} completed
+          </p>
         </div>
         <div className="flex items-center gap-1.5">
           <Button
@@ -542,7 +341,7 @@ export default function AgentExecutionsPage() {
             onClick={expandAll}
             className="text-[11px] h-7 text-muted-foreground/60 hover:text-foreground"
           >
-            Expand All
+            Expand
           </Button>
           <Button
             variant="ghost"
@@ -550,31 +349,30 @@ export default function AgentExecutionsPage() {
             onClick={collapseAll}
             className="text-[11px] h-7 text-muted-foreground/60 hover:text-foreground"
           >
-            Collapse All
+            Collapse
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => { setPage(1); fetchLogs(1); }}
-            className="gap-1.5 h-7 text-[11px] border-border/40"
+            onClick={() => {
+              setPage(1);
+              fetchLogs(1);
+            }}
+            className="h-7 text-[11px] border-border/40"
           >
-            <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
             Refresh
           </Button>
         </div>
       </div>
 
-      {/* search + filters */}
+      {/* filters */}
       <div className="shrink-0 flex items-center gap-3 border-b border-border/30 px-5 py-2.5">
-        <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/30" />
-          <Input
-            placeholder="Search executions..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-7 pl-8 text-xs bg-transparent border-border/30 focus:border-border/60"
-          />
-        </div>
+        <Input
+          placeholder="Search..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-7 max-w-xs text-xs bg-transparent border-border/30 focus:border-border/60"
+        />
         <div className="flex items-center gap-0.5 rounded-lg bg-muted/20 p-0.5">
           {triggerTypes.map((t) => (
             <button
@@ -593,39 +391,41 @@ export default function AgentExecutionsPage() {
         </div>
       </div>
 
-      {/* log list */}
+      {/* timeline list */}
       <ScrollArea className="flex-1">
         {isLoading && logs.length === 0 ? (
-          <div className="flex flex-col gap-2 p-5">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-20 rounded-xl bg-muted/20 animate-pulse" />
+          <div className="flex flex-col gap-3 p-5">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="h-20 rounded-lg bg-muted/20 animate-pulse" />
             ))}
           </div>
         ) : filteredLogs.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24">
-            <div className="h-12 w-12 rounded-xl bg-muted/30 flex items-center justify-center">
-              <Activity className="h-5 w-5 text-muted-foreground/20" />
-            </div>
-            <p className="mt-3 text-sm text-muted-foreground/50">No execution logs</p>
-            <p className="mt-0.5 text-[11px] text-muted-foreground/30">
+            <p className="text-sm text-muted-foreground/50">No logs yet</p>
+            <p className="mt-1 text-[11px] text-muted-foreground/30">
               Logs appear when the agent processes triggers
             </p>
           </div>
         ) : (
-          <div className="space-y-2 p-4">
-            {filteredLogs.map((log) => (
-              <LogCard
-                key={log._id}
-                log={log}
-                isExpanded={expandedIds.has(log._id)}
-                onToggle={() => toggleExpand(log._id)}
-              />
-            ))}
+          <div className="relative px-5 py-4">
+            {/* vertical timeline line */}
+            <div className="absolute left-[31px] top-4 bottom-4 w-px bg-border/40" />
+
+            <div className="space-y-3">
+              {filteredLogs.map((log) => (
+                <LogEntry
+                  key={log._id}
+                  log={log}
+                  isExpanded={expandedIds.has(log._id)}
+                  onToggle={() => toggleExpand(log._id)}
+                />
+              ))}
+            </div>
 
             {/* infinite scroll sentinel */}
-            <div ref={loaderRef} className="h-8 flex items-center justify-center">
+            <div ref={loaderRef} className="h-8 flex items-center justify-center mt-2">
               {isFetchingMore && (
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/30" />
+                <span className="text-[10px] text-muted-foreground/30">loading...</span>
               )}
             </div>
           </div>
@@ -635,14 +435,10 @@ export default function AgentExecutionsPage() {
       {/* footer */}
       <div className="shrink-0 flex items-center justify-between border-t border-border/30 px-5 py-2 bg-muted/5">
         <span className="text-[10px] text-muted-foreground/30">
-          {filteredLogs.length} of {total} executions
+          {filteredLogs.length} of {total}
         </span>
-        <span className="text-[10px] text-muted-foreground/30 flex items-center gap-1.5">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400/40" />
-            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500/60" />
-          </span>
-          Auto-refresh · 10s
+        <span className="text-[10px] text-muted-foreground/30">
+          auto-refresh 10s
         </span>
       </div>
     </div>
