@@ -782,9 +782,9 @@ export default function LogsPage() {
               const isSlaBreachDisabled =
                 card.issue === "SLA_BREACH" &&
                 selectedShipment?.slaBreached === true;
-              // disable delay/SLA/arrived/congestion when not in_transit (except set_in_transit and reset)
+              // disable SLA/arrived/congestion when not in_transit (except set_in_transit, delay, and reset)
               const isNotTransitAction =
-                ["delay", "SLA_BREACH", "arrived_warehouse", "congestion"].includes(card.issue) &&
+                ["SLA_BREACH", "arrived_warehouse", "congestion"].includes(card.issue) &&
                 st !== "in_transit" &&
                 st !== "at_warehouse";
               const isDisabled =
