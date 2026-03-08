@@ -19,27 +19,29 @@ function toAgentReasoning(reasoning: unknown): AgentReasoning | undefined {
   };
 }
 
-// detect action type from card
+// detect action type from card - delivery platform specific
 function detectActionType(card: ActionCard): ActionType {
   const actionType = card.action_payload?.action_type;
   if (actionType) return actionType;
 
   const label = (card.label || "").toLowerCase();
-  const webhookPath = (card.action_payload?.webhook_to_call || "").toLowerCase();
 
-
-  if (label.includes("human") || label.includes("escalate") || label.includes("talk to")) {
+  if (label.includes("human") || label.includes("escalate") || label.includes("talk to") || label.includes("support agent")) {
     return "escalate";
   }
-  if (label.includes("webhook") || label.includes("resend")) {
-    return "resend_webhook";
+  if (label.includes("reroute") || label.includes("redirect")) {
+    return "reroute";
   }
-
+  if (label.includes("notify") || label.includes("email") || label.includes("sms")) {
+    return "notify_consumer";
+  }
+  if (label.includes("priority") || label.includes("urgent")) {
+    return "reprioritize";
+  }
 
   return "generic";
 }
 
-// generates unique id
 function generateId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
@@ -48,7 +50,7 @@ const WELCOME_MESSAGE: ChatMessage = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hello! I'm here to help with your support requests. Describe your issue or question, and I'll assist you.",
+    "Hello! I'm here to help with your delivery and shipment questions. Describe your issue or select a quick option below.",
   timestamp: Date.now(),
 };
 
@@ -58,7 +60,6 @@ function isEscalationAction(card: ActionCard): boolean {
   const webhookPath = (card.action_payload?.webhook_to_call || "").toLowerCase();
   const cardId = (card.id || "").toLowerCase();
 
-  // check various patterns that indicate escalation
   const escalationPatterns = [
     "talk to human",
     "contact support",
@@ -71,32 +72,25 @@ function isEscalationAction(card: ActionCard): boolean {
     "talk_to_human",
     "contact_support",
     "escalate_to_human",
-    "talkto human",
     "human",
   ];
 
-  // check label
   for (const pattern of escalationPatterns) {
     if (label.includes(pattern) || pattern.includes(label)) {
-      console.log("[Agent] Escalation detected via label:", label);
       return true;
     }
   }
 
-  // check webhook path
   if (
     webhookPath.includes("escalate") ||
     webhookPath.includes("human") ||
     webhookPath.includes("/support")
   ) {
-    console.log("[Agent] Escalation detected via webhook:", webhookPath);
     return true;
   }
 
-  // check card id
   for (const pattern of escalationPatterns) {
     if (cardId.includes(pattern.replace(/\s/g, "_")) || cardId.includes(pattern.replace(/\s/g, ""))) {
-      console.log("[Agent] Escalation detected via card id:", cardId);
       return true;
     }
   }
@@ -110,6 +104,7 @@ export function useAgentChat() {
   const [isLoading, setIsLoading] = useState(false);
   const [currentTicketId, setCurrentTicketId] = useState<string | null>(null);
   const [isEscalated, setIsEscalated] = useState(false);
+  const [ticketStatus, setTicketStatus] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -128,8 +123,6 @@ export function useAgentChat() {
   // polling for escalated tickets
   useEffect(() => {
     if (isEscalated && currentTicketId) {
-      console.log("[Agent] Starting polling for escalated ticket:", currentTicketId);
-
       const poll = async () => {
         try {
           const history = await fetchChatHistory(currentTicketId);
@@ -156,7 +149,6 @@ export function useAgentChat() {
         }
       };
 
-      // poll every 2 seconds
       pollingRef.current = setInterval(poll, 2000);
 
       return () => {
@@ -167,7 +159,7 @@ export function useAgentChat() {
     }
   }, [isEscalated, currentTicketId]);
 
-  // send message to agent via express backend
+  // send message to agent
   const sendMessage = useCallback(async () => {
     if (!inputValue.trim() || isLoading) return;
 
@@ -189,20 +181,15 @@ export function useAgentChat() {
     setIsLoading(true);
 
     try {
-      // build payload matching backend's sendAgentMessage expectations
       const payload = {
         _id: currentTicketId,
         shipment_id: null,
         consumer_id: user.id,
-        merchant_id: user.id,
         message: {
           content: userMessage.content,
         },
       };
 
-      console.log("[Agent] Sending message:", payload);
-
-      // send to express backend
       const response = await fetch(config.api.shipments.agent, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -210,9 +197,7 @@ export function useAgentChat() {
       });
 
       const responseData = await response.json();
-      console.log("[Agent] Response:", responseData);
 
-      // extract data from api response wrapper
       const data: AgentResponse & {
         success?: boolean;
         error?: string;
@@ -220,17 +205,12 @@ export function useAgentChat() {
         is_escalated?: boolean;
       } = responseData.data || responseData;
 
-      // store ticket id for subsequent messages
       if (data.ticket_id && !currentTicketId) {
-        console.log("[Agent] Setting ticket id:", data.ticket_id);
         setCurrentTicketId(data.ticket_id);
       }
 
-      // check if ticket is escalated (no ai response)
       if (data.is_escalated) {
-        console.log("[Agent] Ticket is escalated, enabling polling");
         setIsEscalated(true);
-        // no assistant message to add when escalated
       } else if (data.agent_message) {
         const assistantMessage: ChatMessage = {
           id: generateId("msg"),
@@ -272,8 +252,6 @@ export function useAgentChat() {
   // handle action button click
   const handleActionClick = useCallback(
     async (card: ActionCard) => {
-      console.log("[Agent] Action clicked:", card);
-
       // handle link type
       if (card.type === "link" && card.url) {
         window.open(card.url, "_blank");
@@ -282,8 +260,6 @@ export function useAgentChat() {
 
       // check if this is an escalation action
       if (isEscalationAction(card)) {
-        console.log("[Agent] Escalation action detected, currentTicketId:", currentTicketId);
-
         if (!currentTicketId) {
           toast.error("No active conversation to escalate");
           return;
@@ -292,15 +268,12 @@ export function useAgentChat() {
         setIsLoading(true);
 
         try {
-          console.log("[Agent] Calling escalateTicket API for:", currentTicketId);
           const result = await escalateTicket(currentTicketId);
-          console.log("[Agent] Escalation result:", result);
 
-          // add system message
           const systemMessage: ChatMessage = {
             id: generateId("msg"),
             role: "assistant",
-            content: result.system_message || "You've been connected to a human agent. They will respond to you shortly.",
+            content: (result as any).system_message || "You've been connected to a human agent. They will respond to you shortly.",
             timestamp: Date.now(),
             isHuman: true,
           };
@@ -315,7 +288,6 @@ export function useAgentChat() {
           console.error("[Agent] Failed to escalate:", error);
           toast.error("Failed to connect to human support");
 
-          // add error message
           const errorMessage: ChatMessage = {
             id: generateId("msg"),
             role: "assistant",
@@ -330,27 +302,38 @@ export function useAgentChat() {
         return;
       }
 
-      // handle other action payloads (non-escalation)
+      // handle delivery-platform specific actions
       if (card.action_payload) {
         const actionType = detectActionType(card);
-        console.log("[Agent] Action type detected:", actionType, "payload:", card.action_payload);
 
         setIsLoading(true);
 
         try {
-            toast.info(`Action "${card.label}" triggered`, {
-              description: "Processing your request...",
-            });
+          let responseContent = `I've processed your request for "${card.label}".`;
 
-            const actionMessage: ChatMessage = {
-              id: generateId("msg"),
-              role: "assistant",
-              content: `I've processed your request for "${card.label}". Is there anything else I can help you with?`,
-              timestamp: Date.now(),
-            };
-            setMessages((prev) => [...prev, actionMessage]);
+          if (actionType === "reroute") {
+            responseContent = `I've initiated a reroute for your shipment. You'll receive an updated ETA shortly.`;
+          } else if (actionType === "notify_consumer") {
+            responseContent = `Notification has been sent. You should receive an update shortly.`;
+          } else if (actionType === "reprioritize") {
+            responseContent = `Your shipment has been reprioritized. The team will handle it with higher urgency.`;
+          }
 
-        } catch (error) {console.log("[Agent] Action error:", error);
+          responseContent += " Is there anything else I can help you with?";
+
+          toast.info(`Action "${card.label}" triggered`, {
+            description: "Processing your request...",
+          });
+
+          const actionMessage: ChatMessage = {
+            id: generateId("msg"),
+            role: "assistant",
+            content: responseContent,
+            timestamp: Date.now(),
+          };
+          setMessages((prev) => [...prev, actionMessage]);
+        } catch (error) {
+          console.log("[Agent] Action error:", error);
           toast.error(`Failed to execute "${card.label}"`, {
             description: error instanceof Error ? error.message : "An error occurred",
           });
@@ -372,9 +355,6 @@ export function useAgentChat() {
 
   // start new conversation
   const startNewConversation = useCallback(() => {
-    console.log("[Agent] Starting new conversation");
-
-    // stop polling
     if (pollingRef.current) {
       clearInterval(pollingRef.current);
     }
@@ -383,6 +363,7 @@ export function useAgentChat() {
     setInputValue("");
     setCurrentTicketId(null);
     setIsEscalated(false);
+    setTicketStatus(null);
   }, []);
 
   // load existing ticket conversation
@@ -392,8 +373,6 @@ export function useAgentChat() {
       chatHistory: TicketHistoryItem[],
       ticketIsEscalated?: boolean
     ) => {
-      console.log("[Agent] Loading ticket conversation:", ticketId, "escalated:", ticketIsEscalated);
-
       const loadedMessages: ChatMessage[] = chatHistory.map((item: TicketHistoryItem, index: number) => ({
         id: `loaded-${ticketId}-${index}`,
         role: item.role,
@@ -426,6 +405,7 @@ export function useAgentChat() {
     scrollRef,
     currentTicketId,
     isEscalated,
+    ticketStatus,
     sendMessage,
     handleActionClick,
     startNewConversation,

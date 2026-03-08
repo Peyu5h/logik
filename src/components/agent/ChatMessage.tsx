@@ -9,56 +9,38 @@ import { MessageActions } from "./MessageActions";
 import { MarkdownContent } from "./MarkdownContent";
 import { formatTime } from "./utils";
 import type { ChatMessage as ChatMessageType, ActionCard } from "./types";
-import { UserCircle, ChevronDown, Brain, AlertTriangle, CheckCircle2, HelpCircle, GitBranch, FileText, Zap } from "lucide-react";
+import { UserCircle, ChevronDown, Brain } from "lucide-react";
 
 interface ChatMessageProps {
   message: ChatMessageType;
   onAction: (card: ActionCard) => void;
 }
 
-// issue type badge colors (dimmed for dark background)
-const issueTypeConfig = {
-  migration_issue: { label: "Migration Issue", className: "bg-blue-500/5 text-blue-400/80" },
-  platform_bug: { label: "Platform Bug", className: "bg-red-500/5 text-red-400/70" },
-  documentation_gap: { label: "Docs Gap", className: "bg-amber-500/5 text-amber-400/70" },
-  merchant_config: { label: "Config Error", className: "bg-purple-500/5 text-purple-400/70" },
-  unknown: { label: "Unknown", className: "bg-muted/50 text-muted-foreground/70" },
-};
+// delivery platform specific tools to show
+const relevantTools = [
+  "check_shipment_status",
+  "track_shipment",
+  "get_delivery_eta",
+  "contact_carrier",
+  "check_warehouse_status",
+  "reroute_shipment",
+  "escalate_to_human",
+  "notify_consumer",
+  "check_sla",
+  "get_shipment_history",
+];
 
-
-
-// actions taken config (dimmed colors)
-// only show auto-executed actions (github_issue), not user-triggered ones (update_docs)
-const autoExecutedActions = ["github_issue", "create_github_issue"];
-
-const actionsTakenConfig: Record<string, { icon: typeof GitBranch; label: string; className: string }> = {
-  github_issue: { icon: GitBranch, label: "GitHub Issue Created", className: "bg-purple-500/5 text-purple-400/70" },
-  create_github_issue: { icon: GitBranch, label: "GitHub Issue Created", className: "bg-purple-500/5 text-purple-400/70" },
-};
-
-// actions taken display - only shows auto-executed actions
-function ActionsTaken({ actions }: { actions: string[] }) {
-  // filter to only show auto-executed actions
-  const visibleActions = actions?.filter((a) => autoExecutedActions.includes(a)) || [];
-  if (visibleActions.length === 0) return null;
-
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {visibleActions.map((action, i) => {
-        const config = actionsTakenConfig[action] || { icon: Zap, label: action, className: "bg-muted/50 text-muted-foreground/70" };
-        const Icon = config.icon;
-        return (
-          <span
-            key={i}
-            className={cn("flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium", config.className)}
-          >
-            <Icon className="h-3 w-3" />
-            {config.label}
-          </span>
-        );
-      })}
-    </div>
-  );
+// filters tools to only show delivery-platform relevant ones
+function filterRelevantTools(tools: string[]): string[] {
+  if (!tools || tools.length === 0) return [];
+  return tools.filter((t) => {
+    const lower = t.toLowerCase();
+    // exclude coding agent tools
+    if (lower.includes("github") || lower.includes("migration") || lower.includes("codebase") || lower.includes("repository") || lower.includes("pull_request") || lower.includes("code_review")) {
+      return false;
+    }
+    return true;
+  });
 }
 
 export const ChatMessage = memo(function ChatMessage({
@@ -74,6 +56,8 @@ export const ChatMessage = memo(function ChatMessage({
     message.agentReasoning.assumptions?.length ||
     message.agentReasoning.uncertainties?.length
   );
+
+  const filteredTools = filterRelevantTools(message.toolsUsed || []);
 
   return (
     <motion.div
@@ -138,19 +122,6 @@ export const ChatMessage = memo(function ChatMessage({
                     className="overflow-hidden"
                   >
                     <div className="mt-2 rounded-lg bg-muted/50 p-3 text-xs space-y-2">
-                      {/* issue type */}
-                      {message.agentReasoning.issue_type && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-muted-foreground">Type:</span>
-                          <span className={cn(
-                            "px-1.5 py-0.5 rounded text-[10px] font-medium",
-                            issueTypeConfig[message.agentReasoning.issue_type]?.className || issueTypeConfig.unknown.className
-                          )}>
-                            {issueTypeConfig[message.agentReasoning.issue_type]?.label || "Unknown"}
-                          </span>
-                        </div>
-                      )}
-
                       {/* root cause */}
                       {message.agentReasoning.root_cause && (
                         <div>
@@ -189,17 +160,10 @@ export const ChatMessage = memo(function ChatMessage({
             </div>
           )}
 
-          {/* actions taken (only auto-executed like github_issue) */}
-          {!isUser && !isHuman && message.actionsTaken && message.actionsTaken.length > 0 && (
+          {/* tools row - only delivery platform relevant tools */}
+          {!isUser && !isHuman && filteredTools.length > 0 && (
             <div className="mt-2">
-              <ActionsTaken actions={message.actionsTaken} />
-            </div>
-          )}
-
-          {/* tools row */}
-          {!isUser && !isHuman && message.toolsUsed && message.toolsUsed.length > 0 && (
-            <div className="mt-2">
-              <ToolsUsed tools={message.toolsUsed} />
+              <ToolsUsed tools={filteredTools} />
             </div>
           )}
 
@@ -218,7 +182,8 @@ export const ChatMessage = memo(function ChatMessage({
             {formatTime(message.timestamp)}
           </span>
 
-          {!isUser && <MessageActions content={message.content} confidenceScore={message.confidenceScore} />}
+          {/* confidence score hidden - only show copy/feedback actions */}
+          {!isUser && <MessageActions content={message.content} />}
         </div>
       </div>
     </motion.div>

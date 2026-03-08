@@ -288,8 +288,7 @@ export default function SupportPage() {
       let toolsUsed: string[] = [];
       let actionsTaken: string[] = [];
       let reasoning: AgentReasoning | undefined;
-      let confidenceScore: number | undefined;
-      let complexityScore: number | undefined;
+
 
       if (activeTicketId) {
         // follow-up on existing ticket
@@ -316,8 +315,6 @@ export default function SupportPage() {
             if (agentRes.tools_used) toolsUsed = agentRes.tools_used;
             if (agentRes.actions_taken) actionsTaken = agentRes.actions_taken;
             reasoning = toAgentReasoning(agentRes.reasoning);
-            confidenceScore = agentRes.confidence_score;
-            complexityScore = agentRes.complexity_score;
           } else if (ticket?.agent_message) {
             agentMessage = ticket.agent_message;
             if (ticket.cards) cards = ticket.cards;
@@ -358,8 +355,6 @@ export default function SupportPage() {
             if (agentRes.tools_used) toolsUsed = agentRes.tools_used;
             if (agentRes.actions_taken) actionsTaken = agentRes.actions_taken;
             reasoning = toAgentReasoning(agentRes.reasoning);
-            confidenceScore = agentRes.confidence_score;
-            complexityScore = agentRes.complexity_score;
           } else if (ticket?.agent_message) {
             agentMessage = ticket.agent_message;
             if (ticket.cards) cards = ticket.cards;
@@ -401,8 +396,6 @@ export default function SupportPage() {
         toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
         actionsTaken: actionsTaken.length > 0 ? actionsTaken : undefined,
         agentReasoning: reasoning,
-        confidenceScore,
-        complexityScore,
         isHuman: false,
       };
 

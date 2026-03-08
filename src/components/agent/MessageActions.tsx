@@ -13,12 +13,10 @@ import {
 
 interface MessageActionsProps {
   content: string;
-  confidenceScore?: number;
 }
 
 export const MessageActions = memo(function MessageActions({
   content,
-  confidenceScore,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"like" | "dislike" | null>(null);
@@ -29,34 +27,8 @@ export const MessageActions = memo(function MessageActions({
     setTimeout(() => setCopied(false), 1000);
   }, [content]);
 
-  // confidence level helper
-  const getConfidenceInfo = (score: number) => {
-    if (score >= 8) return { label: "High", color: "text-emerald-500" };
-    if (score >= 5) return { label: "Medium", color: "text-amber-500" };
-    return { label: "Low", color: "text-red-500" };
-  };
-
   return (
     <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-      {/* confidence score indicator */}
-      {confidenceScore && (
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className={cn(
-                "text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted/50 cursor-default",
-                getConfidenceInfo(confidenceScore).color
-              )}>
-                {confidenceScore}/10
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              Confidence: {getConfidenceInfo(confidenceScore).label} ({confidenceScore}/10)
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      )}
-
       <TooltipProvider delayDuration={300}>
         <Tooltip>
           <TooltipTrigger asChild>

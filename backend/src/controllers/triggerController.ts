@@ -947,7 +947,7 @@ async function handleCongestion(req: Request, res: Response) {
 
       // auto-reassign carrier: pick best available carrier for the destination region
       const destRegion = (shipment as any).destination?.region || "";
-      const bestCarrier = await findBestCarrier(shipment.carrierId, destRegion);
+      const bestCarrier = await findBestCarrier(shipment.carrierId, [destRegion]);
       if (bestCarrier) {
         shipUpdateData.previousCarrierId = shipment.carrierId;
         shipUpdateData.carrierId = bestCarrier.id;

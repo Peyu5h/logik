@@ -551,7 +551,7 @@ export const getChats = async (req: Request, res: Response) => {
 // get single chat by id
 export const getChatById = async (req: Request, res: Response) => {
   try {
-    const { chatId } = req.params;
+    const chatId = req.params.chatId as string;
 
     const chat = await prisma.chat.findUnique({
       where: { id: chatId },
@@ -571,7 +571,7 @@ export const getChatById = async (req: Request, res: Response) => {
 // get messages for a specific chat
 export const getChatMessages = async (req: Request, res: Response) => {
   try {
-    const { chatId } = req.params;
+    const chatId = req.params.chatId as string;
 
     const chat = await prisma.chat.findUnique({
       where: { id: chatId },
@@ -600,7 +600,7 @@ export const getChatMessages = async (req: Request, res: Response) => {
 // send admin message to a chat in the chats collection
 export const sendChatMessage = async (req: Request, res: Response) => {
   try {
-    const { chatId } = req.params;
+    const chatId = req.params.chatId as string;
     const { admin_id, content } = req.body;
 
     if (!content || typeof content !== "string") {
@@ -766,7 +766,7 @@ export const getSupportTickets = async (req: Request, res: Response) => {
 // get single ticket by id
 export const getSupportTicketById = async (req: Request, res: Response) => {
   try {
-    const { ticketId } = req.params;
+    const ticketId = req.params.ticketId as string;
 
     const ticket = await prisma.supportTicket.findFirst({
       where: { OR: [{ id: ticketId }, { ticketId: ticketId }] },
@@ -786,7 +786,7 @@ export const getSupportTicketById = async (req: Request, res: Response) => {
 // get chat messages linked to a ticket from support_chat_history collection
 export const getSupportTicketMessages = async (req: Request, res: Response) => {
   try {
-    const { ticketId } = req.params;
+    const ticketId = req.params.ticketId as string;
 
     const ticket = await prisma.supportTicket.findFirst({
       where: { OR: [{ id: ticketId }, { ticketId: ticketId }] },
@@ -966,7 +966,7 @@ export const createSupportTicket = async (req: Request, res: Response) => {
 // follow-up message on existing ticket
 export const sendTicketMessage = async (req: Request, res: Response) => {
   try {
-    const { ticketId } = req.params;
+    const ticketId = req.params.ticketId as string;
     const { consumer_id, message } = req.body;
 
     if (!message?.content) {
@@ -1089,7 +1089,7 @@ export const sendTicketMessage = async (req: Request, res: Response) => {
 // escalate a support ticket to human agent
 export const escalateTicketHandler = async (req: Request, res: Response) => {
   try {
-    const { ticketId } = req.params;
+    const ticketId = req.params.ticketId as string;
     const { reason } = req.body;
 
     // find ticket by id or ticketId string
@@ -1218,7 +1218,7 @@ export const getAgentLogs = async (req: Request, res: Response) => {
 // get single agent log
 export const getAgentLogById = async (req: Request, res: Response) => {
   try {
-    const { logId } = req.params;
+    const logId = req.params.logId as string;
 
     const log = await prisma.agentLog.findUnique({
       where: { id: logId },
