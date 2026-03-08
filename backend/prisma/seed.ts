@@ -245,6 +245,24 @@ async function main() {
         isActive: true,
       },
     }),
+    await prisma.warehouse.upsert({
+      where: { code: "GZB-N2" },
+      update: {},
+      create: {
+        name: "Ghaziabad North Hub",
+        code: "GZB-N2",
+        location: { lat: 28.6692, lng: 77.4538, address: "Sahibabad Industrial Area", city: "Ghaziabad", region: "north" },
+        capacity: 1000,
+        currentLoad: 180,
+        utilizationPct: 18.0,
+        throughputRate: 130,
+        status: "operational",
+        congestionLevel: "low",
+        avgProcessTime: 1.4,
+        regions: ["north", "central"],
+        isActive: true,
+      },
+    }),
   ];
   console.log(`+ ${warehouses.length} warehouses`);
 
