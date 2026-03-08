@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "trainedAt": "2026-03-08T03:02:31.973Z",
+  "accuracy": 93.66,
+  "macroF1": 92.99,
+  "numSamples": 25000,
+  "numFeatures": 18,
+  "numClasses": 4,
+  "classes": [
+    "LOW",
+    "MEDIUM",
+    "HIGH",
+    "CRITICAL"
+  ],
+  "improvements": [
+    "Cyclical sin/cos encoding for hour, dayOfWeek, month",
+    "3 interaction features: inbound×surge, congestion_pressure, backlog_pressure",
+    "Class-weighted loss for minority class boost",
+    "Residual skip connection in architecture",
+    "Cosine LR decay + early stopping",
+    "25,000 samples with stratified split",
+    "Reduced noise (±0.03 vs ±0.06)"
+  ],
+  "featureNames": [
+    "sin_hour",
+    "cos_hour",
+    "sin_day_of_week",
+    "cos_day_of_week",
+    "sin_month",
+    "cos_month",
+    "warehouse_tier",
+    "inbound_ratio",
+    "pending_ratio",
+    "staff_ratio",
+    "surge_norm",
+    "is_monsoon",
+    "is_festive",
+    "is_year_end",
+    "is_weekend",
+    "inbound_x_surge",
+    "congestion_pressure",
+    "backlog_pressure"
+  ]
+}

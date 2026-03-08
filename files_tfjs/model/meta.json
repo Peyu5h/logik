@@ -1,0 +1,44 @@
+{
+  "trainedAt": "2026-03-08T01:06:06.447Z",
+  "accuracy": 91.63,
+  "numSamples": 15000,
+  "numFeatures": 8,
+  "numCarriers": 5,
+  "carriers": [
+    {
+      "id": 0,
+      "name": "Delhivery Express",
+      "code": "DLX"
+    },
+    {
+      "id": 1,
+      "name": "BlueDart",
+      "code": "BDT"
+    },
+    {
+      "id": 2,
+      "name": "Ekart Logistics",
+      "code": "EKT"
+    },
+    {
+      "id": 3,
+      "name": "Shadowfax",
+      "code": "SFX"
+    },
+    {
+      "id": 4,
+      "name": "XpressBees",
+      "code": "XPB"
+    }
+  ],
+  "featureNames": [
+    "weight_kg_norm",
+    "distance_km_norm",
+    "value_inr_norm",
+    "origin_tier_norm",
+    "dest_tier_norm",
+    "shipment_type_norm",
+    "priority_norm",
+    "is_monsoon"
+  ]
+}
