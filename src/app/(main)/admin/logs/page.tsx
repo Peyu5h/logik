@@ -14,6 +14,9 @@ import {
   Warehouse,
   RotateCcw,
   TrafficCone,
+  BrainCircuit,
+  Search as SearchIcon,
+  Route,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
@@ -149,23 +152,44 @@ function formatDelayHrs(minutes: number): string {
   return `${hrs}h ${mins}m`;
 }
 
-// renders the multi-hop route as city -> city -> city (deduplicated)
+// renders the multi-hop route as warehouse (city) -> warehouse (city) -> city
 function RouteDisplay({ shipment }: { shipment: ShipmentState }) {
-  // build deduplicated ordered city list from origin -> waypoints -> destination
   const waypoints = shipment.routeWaypoints || [];
   const sorted = [...waypoints].sort((a, b) => a.order - b.order);
-  const cities: string[] = [];
 
-  if (shipment.origin?.city) cities.push(shipment.origin.city);
+  // build route stops: origin -> each waypoint with warehouse name -> destination
+  interface RouteStop {
+    label: string;
+    sub?: string;
+    status?: string;
+  }
+  const stops: RouteStop[] = [];
+
+  if (shipment.origin?.city) {
+    stops.push({ label: shipment.origin.city });
+  }
+
   for (const wp of sorted) {
-    if (wp.city && cities[cities.length - 1] !== wp.city) cities.push(wp.city);
-  }
-  if (shipment.destination?.city && cities[cities.length - 1] !== shipment.destination.city) {
-    cities.push(shipment.destination.city);
+    const name = wp.warehouseName || wp.warehouseCode;
+    const city = wp.city;
+    // avoid duplicate if same city as last stop
+    const lastLabel = stops[stops.length - 1]?.label;
+    if (name && lastLabel !== name) {
+      stops.push({ label: name, sub: city !== name ? city : undefined, status: wp.status });
+    } else if (city && lastLabel !== city) {
+      stops.push({ label: city, status: wp.status });
+    }
   }
 
-  // if we got nothing from waypoints, try the pre-built route array
-  if (cities.length === 0 && shipment.route && shipment.route.length > 0) {
+  if (shipment.destination?.city) {
+    const lastLabel = stops[stops.length - 1]?.label;
+    if (lastLabel !== shipment.destination.city) {
+      stops.push({ label: shipment.destination.city });
+    }
+  }
+
+  // fallback to pre-built route array
+  if (stops.length === 0 && shipment.route && shipment.route.length > 0) {
     const deduped: string[] = [];
     for (const c of shipment.route) {
       if (deduped[deduped.length - 1] !== c) deduped.push(c);
@@ -184,14 +208,26 @@ function RouteDisplay({ shipment }: { shipment: ShipmentState }) {
     );
   }
 
-  if (cities.length === 0) return <span className="text-[9px]">No route</span>;
+  if (stops.length === 0) return <span className="text-[9px]">No route</span>;
 
   return (
     <div className="flex items-center gap-0.5 flex-wrap">
-      {cities.map((city, i) => (
+      {stops.map((stop, i) => (
         <span key={i} className="flex items-center gap-0.5">
-          <span className="text-[9px] whitespace-nowrap">{city}</span>
-          {i < cities.length - 1 && (
+          <span
+            className={cn(
+              "text-[9px] whitespace-nowrap",
+              stop.status === "completed" && "text-emerald-500",
+              stop.status === "in_transit" && "text-sky-500",
+              stop.status === "rerouted" && "text-amber-500"
+            )}
+          >
+            {stop.label}
+            {stop.sub && (
+              <span className="text-muted-foreground/60 ml-0.5">({stop.sub})</span>
+            )}
+          </span>
+          {i < stops.length - 1 && (
             <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
           )}
         </span>
@@ -308,13 +344,30 @@ export default function LogsPage() {
   };
 
   // resolves the congestion trigger endpoint for a given shipment
+  // finds the next PENDING warehouse (not in_transit, that's already departed from)
   const getCongestionWarehouseCode = (): string | null => {
     if (!selectedShipment) return null;
     const waypoints = selectedShipment.routeWaypoints || [];
     const sorted = [...waypoints].sort((a, b) => a.order - b.order);
-    // find the next pending/in_transit waypoint warehouse to congest
-    const nextWp = sorted.find((wp) => wp.status === "pending" || wp.status === "in_transit");
+    const nextWp = sorted.find((wp) => wp.status === "pending");
     return nextWp?.warehouseCode || null;
+  };
+
+  // congestion loading phases
+  const [congestionPhase, setCongestionPhase] = useState<string | null>(null);
+
+  // helper to run congestion phased loading animation
+  const runCongestionPhases = async (): Promise<void> => {
+    const whCode = getCongestionWarehouseCode();
+    const phases = [
+      `Scanning warehouse ${whCode || "?"} congestion levels...`,
+      "Evaluating alternate routes & nearby warehouses...",
+      "Rerouting affected shipments & reassigning carriers...",
+    ];
+    for (const phase of phases) {
+      setCongestionPhase(phase);
+      await new Promise((r) => setTimeout(r, 800));
+    }
   };
 
   // fires a trigger against the selected shipment
@@ -328,7 +381,7 @@ export default function LogsPage() {
 
     const timestamp = new Date().toISOString();
 
-    // for congestion, we need the warehouse code
+    // for congestion, we need the warehouse code of the NEXT PENDING warehouse
     let triggerUrl = `${API_BASE_URL}/api/triggers/${selectedCaseId}/${card.issue}`;
     if (card.issue === "congestion") {
       const whCode = getCongestionWarehouseCode();
@@ -351,10 +404,18 @@ export default function LogsPage() {
     addLocalLog(logEntry);
 
     try {
-      const response = await fetch(triggerUrl, {
+      // run phased loading for congestion
+      const fetchPromise = fetch(triggerUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
+
+      if (card.issue === "congestion") {
+        await Promise.all([runCongestionPhases(), fetchPromise.then(() => {})]);
+      }
+
+      const response = await fetchPromise;
+      setCongestionPhase(null);
 
       const result = await response.json();
 
@@ -409,6 +470,7 @@ export default function LogsPage() {
       }
     } catch (err) {
       toast.error("Failed to connect to server");
+      setCongestionPhase(null);
       const errorLog: SystemLog = {
         id: `local-err-${Date.now().toString(36)}`,
         timestamp: new Date().toISOString(),
@@ -650,22 +712,39 @@ export default function LogsPage() {
         <ScrollArea className="flex-1 min-h-0">
           <div className="space-y-2 p-3">
             {TRIGGER_CARDS.map((card) => {
-              // disable "Set In Transit" when already in transit
+              const st = selectedShipment?.status;
+              // disable "Set In Transit" when already in transit or delivered/cancelled
               const isSetTransitDisabled =
                 card.issue === "set_in_transit" &&
-                selectedShipment?.status === "in_transit";
-              // disable congestion if no pending waypoint
+                (st === "in_transit" || st === "delivered" || st === "cancelled");
+              // disable "Arrived at Warehouse" when not in_transit
+              const isArrivedDisabled =
+                card.issue === "arrived_warehouse" && st !== "in_transit";
+              // disable congestion if no pending waypoint or not in_transit
               const isCongestionDisabled =
                 card.issue === "congestion" &&
                 selectedShipment &&
-                !(selectedShipment.routeWaypoints || []).some(
-                  (wp) => wp.status === "pending" || wp.status === "in_transit"
-                );
+                (st !== "in_transit" ||
+                  !(selectedShipment.routeWaypoints || []).some(
+                    (wp) => wp.status === "pending"
+                  ));
+              // disable SLA breach if already breached
+              const isSlaBreachDisabled =
+                card.issue === "SLA_BREACH" &&
+                selectedShipment?.slaBreached === true;
+              // disable delay/SLA/arrived/congestion when not in_transit (except set_in_transit and reset)
+              const isNotTransitAction =
+                ["delay", "SLA_BREACH", "arrived_warehouse", "congestion"].includes(card.issue) &&
+                st !== "in_transit" &&
+                st !== "at_warehouse";
               const isDisabled =
                 loadingTriggers[card.id] ||
                 !selectedShipment ||
                 isSetTransitDisabled ||
-                isCongestionDisabled;
+                isArrivedDisabled ||
+                isCongestionDisabled ||
+                isSlaBreachDisabled ||
+                (isNotTransitAction && card.issue !== "congestion");
 
               return (
                 <div
@@ -701,6 +780,46 @@ export default function LogsPage() {
                     </span>
                   </div>
 
+                  {/* congestion phased loading */}
+                  {card.issue === "congestion" && loadingTriggers[card.id] && congestionPhase && (
+                    <div className="mb-2 space-y-1.5">
+                      {[
+                        `Scanning warehouse congestion levels...`,
+                        "Evaluating alternate routes & nearby warehouses...",
+                        "Rerouting affected shipments & reassigning carriers...",
+                      ].map((phase, i) => {
+                        const isActive = congestionPhase === phase;
+                        const isPast = [
+                          `Scanning warehouse congestion levels...`,
+                          "Evaluating alternate routes & nearby warehouses...",
+                          "Rerouting affected shipments & reassigning carriers...",
+                        ].indexOf(congestionPhase) > i;
+                        return (
+                          <div
+                            key={i}
+                            className={cn(
+                              "flex items-center gap-1.5 text-[10px] rounded px-2 py-1 transition-all",
+                              isActive
+                                ? "bg-amber-500/10 text-amber-500"
+                                : isPast
+                                  ? "bg-emerald-500/10 text-emerald-500"
+                                  : "text-muted-foreground/50"
+                            )}
+                          >
+                            {isActive ? (
+                              <Loader2 className="h-2.5 w-2.5 animate-spin shrink-0" />
+                            ) : isPast ? (
+                              <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
+                            ) : (
+                              <div className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30 shrink-0" />
+                            )}
+                            <span className="truncate">{phase}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   <button
                     onClick={() => triggerSignal(card)}
                     disabled={!!isDisabled}
@@ -721,6 +840,14 @@ export default function LogsPage() {
                       </>
                     ) : isSetTransitDisabled ? (
                       <>Already In Transit</>
+                    ) : isArrivedDisabled ? (
+                      <>Not In Transit</>
+                    ) : isCongestionDisabled ? (
+                      <>No Pending Warehouse</>
+                    ) : isSlaBreachDisabled ? (
+                      <>SLA Already Breached</>
+                    ) : isNotTransitAction && card.issue !== "congestion" ? (
+                      <>Set In Transit First</>
                     ) : (
                       <>Fire on Case {selectedCaseId}</>
                     )}

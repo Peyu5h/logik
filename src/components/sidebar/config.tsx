@@ -6,6 +6,7 @@ import {
   Package,
   MessageCircle,
   Headphones,
+  Activity,
 } from "lucide-react";
 
 interface NavItem {
@@ -49,6 +50,13 @@ export const NavItems = (pathname: string, isAdmin?: boolean): NavItem[] => {
         href: "/admin/support",
         icon: <Headphones size={20} />,
         active: isNavItemActive("/admin/support"),
+        position: "top",
+      },
+      {
+        name: "Agent Executions",
+        href: "/admin/agent-logs",
+        icon: <Activity size={20} />,
+        active: isNavItemActive("/admin/agent-logs"),
         position: "top",
       },
     ];

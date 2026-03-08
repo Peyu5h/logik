@@ -209,10 +209,64 @@ export default function ConsumerDashboard() {
 
   const alertShipments = useMemo(() => {
     return shipments
-      .filter((s) => s.status === "delayed" || s.sla_breached || s.risk_score > 60)
-      .sort((a, b) => b.risk_score - a.risk_score)
-      .slice(0, 5);
+      .filter(
+        (s) =>
+          s.status === "delayed" ||
+          s.sla_breached ||
+          s.risk_score > 30 ||
+          s.rerouted ||
+          s.escalated ||
+          s.delay > 0 ||
+          s.priority === "urgent" ||
+          (s.status !== "delivered" && s.status !== "cancelled")
+      )
+      .sort((a, b) => {
+        // sla breached first, then by risk, then by delay
+        if (a.sla_breached && !b.sla_breached) return -1;
+        if (!a.sla_breached && b.sla_breached) return 1;
+        if (b.risk_score !== a.risk_score) return b.risk_score - a.risk_score;
+        return b.delay - a.delay;
+      })
+      .slice(0, 8);
   }, [shipments]);
+
+  // categorize alert type for varied card styling
+  const getAlertType = (s: Shipment) => {
+    if (s.sla_breached) return "sla_breach";
+    if (s.escalated) return "escalated";
+    if (s.risk_score > 70) return "critical_risk";
+    if (s.rerouted) return "rerouted";
+    if (s.delay >= 360) return "severe_delay";
+    if (s.delay >= 120) return "moderate_delay";
+    if (s.risk_score > 30) return "elevated_risk";
+    if (s.priority === "urgent") return "urgent";
+    return "info";
+  };
+
+  const alertCardStyles: Record<string, { border: string; bg: string; icon: string }> = {
+    sla_breach: { border: "border-red-500/30", bg: "bg-red-500/5", icon: "text-red-500" },
+    escalated: { border: "border-red-500/20", bg: "bg-red-500/5", icon: "text-red-500" },
+    critical_risk: { border: "border-red-500/20", bg: "bg-red-500/5", icon: "text-red-500" },
+    rerouted: { border: "border-blue-500/20", bg: "bg-blue-500/5", icon: "text-blue-500" },
+    severe_delay: { border: "border-orange-500/25", bg: "bg-orange-500/5", icon: "text-orange-500" },
+    moderate_delay: { border: "border-amber-500/20", bg: "bg-amber-500/5", icon: "text-amber-500" },
+    elevated_risk: { border: "border-amber-500/20", bg: "bg-amber-500/5", icon: "text-amber-500" },
+    urgent: { border: "border-violet-500/20", bg: "bg-violet-500/5", icon: "text-violet-500" },
+    info: { border: "border-border", bg: "bg-muted/30", icon: "text-muted-foreground" },
+  };
+
+  const getAlertLabel = (s: Shipment) => {
+    const type = getAlertType(s);
+    if (type === "sla_breach") return "SLA Breached";
+    if (type === "escalated") return "Escalated";
+    if (type === "critical_risk") return "Critical Risk";
+    if (type === "rerouted") return "Rerouted";
+    if (type === "severe_delay") return `Delayed ${Math.floor(s.delay / 60)}h`;
+    if (type === "moderate_delay") return `Delayed ${Math.floor(s.delay / 60)}h`;
+    if (type === "elevated_risk") return "Elevated Risk";
+    if (type === "urgent") return "Urgent";
+    return statusConfig[s.status]?.label || s.status;
+  };
 
   const handleCreateShipment = () => {
     if (!originCity || !destCity || !user) return;
@@ -320,42 +374,92 @@ export default function ConsumerDashboard() {
           <ScrollArea className="flex-1">
             {alertShipments.length > 0 ? (
               <div className="p-3 space-y-2">
-                {alertShipments.map((s) => (
-                  <div
-                    key={s._id}
-                    className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="font-mono text-[10px] text-muted-foreground">
-                          {s.tracking_id}
-                        </p>
-                        <p className="mt-0.5 text-xs font-medium">
-                          {s.origin.city} → {s.destination.city}
-                        </p>
-                        {s.agent_notes && (
-                          <p className="mt-1 text-[10px] text-orange-600/80 dark:text-orange-400/80 line-clamp-2">
-                            {s.agent_notes}
+                {alertShipments.map((s) => {
+                  const alertType = getAlertType(s);
+                  const style = alertCardStyles[alertType] || alertCardStyles.info;
+                  const label = getAlertLabel(s);
+                  const delayHrs = s.delay > 0 ? Math.floor(s.delay / 60) : 0;
+                  const delayMins = s.delay > 0 ? s.delay % 60 : 0;
+
+                  return (
+                    <div
+                      key={s._id}
+                      className={cn("rounded-lg border p-3", style.border, style.bg)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={cn(
+                                "shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+                                alertType === "sla_breach" || alertType === "escalated" || alertType === "critical_risk"
+                                  ? "bg-red-500/10 text-red-500"
+                                  : alertType === "rerouted"
+                                    ? "bg-blue-500/10 text-blue-500"
+                                    : alertType === "urgent"
+                                      ? "bg-violet-500/10 text-violet-500"
+                                      : "bg-amber-500/10 text-amber-500"
+                              )}
+                            >
+                              {label}
+                            </span>
+                            <span className="font-mono text-[9px] text-muted-foreground/60">
+                              {s.tracking_id}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs font-medium">
+                            {s.origin.city} → {s.destination.city}
                           </p>
-                        )}
+                          {s.agent_notes && (
+                            <p className={cn("mt-1 text-[10px] line-clamp-2", style.icon, "opacity-80")}>
+                              {s.agent_notes}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <span
+                            className={cn(
+                              "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                              s.risk_score > 70
+                                ? "bg-red-500/10 text-red-500"
+                                : s.risk_score > 40
+                                  ? "bg-amber-500/10 text-amber-500"
+                                  : "bg-muted text-muted-foreground"
+                            )}
+                          >
+                            {s.risk_score}
+                          </span>
+                          {s.carrier && (
+                            <span className="text-[9px] text-muted-foreground/50 font-mono">
+                              {s.carrier.code}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <span
-                        className={cn(
-                          "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold",
-                          s.risk_score > 70
-                            ? "bg-red-500/10 text-red-500"
-                            : "bg-amber-500/10 text-amber-500"
+                      <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground">
+                        {s.sla_breached && (
+                          <span className="text-red-500 font-medium flex items-center gap-0.5">
+                            <AlertTriangle className="h-2.5 w-2.5" />
+                            SLA Breached
+                          </span>
                         )}
-                      >
-                        {s.risk_score}
-                      </span>
+                        {s.rerouted && (
+                          <span className="text-blue-500 font-medium">Rerouted</span>
+                        )}
+                        {s.escalated && (
+                          <span className="text-red-500 font-medium">Escalated</span>
+                        )}
+                        {s.delay > 0 && (
+                          <span className="flex items-center gap-0.5">
+                            <Clock className="h-2.5 w-2.5" />
+                            +{delayHrs > 0 ? `${delayHrs}h` : ""}{delayMins > 0 ? `${delayMins}m` : ""}
+                          </span>
+                        )}
+                        <span className="ml-auto">{statusConfig[s.status]?.label || s.status}</span>
+                      </div>
                     </div>
-                    <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground">
-                      {s.sla_breached && <span className="text-red-500 font-medium">SLA Breached</span>}
-                      <span>{statusConfig[s.status]?.label || s.status}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-16">

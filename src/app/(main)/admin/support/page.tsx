@@ -8,7 +8,6 @@ import {
   Search,
   ChevronRight,
   UserCircle,
-  Bot,
   AlertTriangle,
   Package,
   Clock,
@@ -16,6 +15,7 @@ import {
   ArrowRight,
   Headphones,
   RefreshCw,
+  Hash,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
@@ -24,58 +24,34 @@ import { Input } from "~/components/ui/input";
 import { cn } from "~/lib/utils";
 import { toast } from "sonner";
 import useUser from "~/hooks/useUser";
+import { MarkdownContent } from "~/components/agent/MarkdownContent";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 interface ChatMessage {
-  role: "user" | "assistant";
+  role: string;
   content: string;
   timestamp: string;
   is_human?: boolean;
-  cards?: Array<{
-    id: string;
-    label: string;
-    style?: string;
-    action_payload?: Record<string, unknown>;
-  }>;
-  tools_used?: string[];
-  actions_taken?: string[];
+  agent_name?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
-interface IncidentTicket {
+interface ChatTicket {
   _id: string;
-  incident_id: string;
-  type: string;
-  severity: string;
+  session_id: string;
+  visitor_id: string | null;
+  visitor_name: string | null;
+  visitor_email: string | null;
   status: string;
-  title: string;
-  description: string | null;
-  is_escalated: boolean;
-  escalated_at: string | null;
-  risk_score: number;
+  channel: string;
+  metadata: Record<string, unknown> | null;
+  messages: ChatMessage[];
+  message_count: number;
+  last_message: string;
+  last_message_at: string;
   created_at: string;
   updated_at: string;
-  shipment: {
-    _id: string;
-    tracking_id: string;
-    status: string;
-    priority: string;
-    origin: { city?: string; lat?: number; lng?: number };
-    destination: { city?: string; lat?: number; lng?: number };
-    current_location: { city?: string } | null;
-    risk_score: number;
-    sla_breached: boolean;
-    sla_deadline: string | null;
-    carrier: { id: string; name: string; code: string; reliabilityScore?: number } | null;
-    warehouse: { id: string; name: string; code: string; status?: string } | null;
-    consumer: { id: string; name: string; email: string } | null;
-  } | null;
-  assigned_agent: { id: string; name: string; email: string } | null;
-  chat_history: ChatMessage[];
-}
-
-function generateId() {
-  return `msg-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 }
 
 function formatTime(ts: string) {
@@ -96,18 +72,9 @@ function formatRelativeTime(ts: string) {
   return "just now";
 }
 
-const severityColors: Record<string, string> = {
-  low: "text-emerald-500",
-  medium: "text-amber-500",
-  high: "text-orange-500",
-  critical: "text-red-500",
-};
-
 const statusColors: Record<string, { bg: string; text: string }> = {
   open: { bg: "bg-blue-500/10", text: "text-blue-500" },
-  investigating: { bg: "bg-amber-500/10", text: "text-amber-500" },
-  in_progress: { bg: "bg-sky-500/10", text: "text-sky-500" },
-  escalated: { bg: "bg-red-500/10", text: "text-red-500" },
+  active: { bg: "bg-sky-500/10", text: "text-sky-500" },
   resolved: { bg: "bg-emerald-500/10", text: "text-emerald-500" },
   closed: { bg: "bg-muted", text: "text-muted-foreground" },
 };
@@ -115,15 +82,14 @@ const statusColors: Record<string, { bg: string; text: string }> = {
 export default function AdminSupportPage() {
   const { user } = useUser();
 
-  const [incidents, setIncidents] = useState<IncidentTicket[]>([]);
+  const [chats, setChats] = useState<ChatTicket[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
-  const [isLoadingIncidents, setIsLoadingIncidents] = useState(true);
+  const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [isResolving, setIsResolving] = useState(false);
-  const [filter, setFilter] = useState<"all" | "escalated" | "open" | "resolved">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
   const [search, setSearch] = useState("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -153,63 +119,56 @@ export default function AdminSupportPage() {
     }
   }, [input]);
 
-  // fetch incidents
-  const fetchIncidents = useCallback(async () => {
+  // fetch chats from the chats collection
+  const fetchChats = useCallback(async () => {
     try {
-      const url =
-        filter === "escalated"
-          ? `${API_BASE_URL}/api/admin/incidents/escalated`
-          : `${API_BASE_URL}/api/admin/incidents`;
-
       const params = new URLSearchParams();
-      if (user?.id) params.set("admin_id", user.id);
       if (filter === "open") params.set("status", "open");
       if (filter === "resolved") params.set("status", "resolved");
 
-      const res = await fetch(`${url}?${params.toString()}`);
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/chats?${params.toString()}`
+      );
       if (res.ok) {
         const data = await res.json();
-        const list = data.data?.incidents || [];
-        setIncidents(list);
+        const list: ChatTicket[] = data.data?.chats || [];
+        setChats(list);
       }
     } catch {
       // silent
     } finally {
-      setIsLoadingIncidents(false);
+      setIsLoadingChats(false);
     }
-  }, [user?.id, filter]);
+  }, [filter]);
 
   useEffect(() => {
-    fetchIncidents();
-  }, [fetchIncidents]);
+    fetchChats();
+  }, [fetchChats]);
 
-  // poll incidents every 8 seconds
+  // poll chats every 6 seconds
   useEffect(() => {
-    const interval = setInterval(fetchIncidents, 8000);
+    const interval = setInterval(fetchChats, 6000);
     return () => clearInterval(interval);
-  }, [fetchIncidents]);
+  }, [fetchChats]);
 
-  // fetch messages for selected incident
-  const fetchMessages = useCallback(
-    async (incidentId: string) => {
-      try {
-        const res = await fetch(
-          `${API_BASE_URL}/api/admin/incidents/${incidentId}/messages`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          const msgs: ChatMessage[] = data.data?.messages || [];
-          setMessages(msgs);
-        }
-      } catch {
-        // silent
+  // fetch messages for selected chat
+  const fetchMessages = useCallback(async (chatId: string) => {
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/chats/${chatId}/messages`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const msgs: ChatMessage[] = data.data?.messages || [];
+        setMessages(msgs);
       }
-    },
-    []
-  );
+    } catch {
+      // silent
+    }
+  }, []);
 
-  // when selecting a ticket
-  const handleSelectIncident = useCallback(
+  // when selecting a chat
+  const handleSelectChat = useCallback(
     async (id: string) => {
       setSelectedId(id);
       setIsLoadingMessages(true);
@@ -220,7 +179,7 @@ export default function AdminSupportPage() {
     [fetchMessages]
   );
 
-  // poll messages for selected incident
+  // poll messages for selected chat
   useEffect(() => {
     if (pollingRef.current) {
       clearInterval(pollingRef.current);
@@ -250,16 +209,17 @@ export default function AdminSupportPage() {
 
     // optimistic update
     const optimistic: ChatMessage = {
-      role: "assistant",
+      role: "admin",
       content,
       timestamp: new Date().toISOString(),
       is_human: true,
+      agent_name: user.name || "Admin",
     };
     setMessages((prev) => [...prev, optimistic]);
 
     try {
       const res = await fetch(
-        `${API_BASE_URL}/api/admin/incidents/${selectedId}/message`,
+        `${API_BASE_URL}/api/admin/chats/${selectedId}/message`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -273,45 +233,12 @@ export default function AdminSupportPage() {
       if (!res.ok) {
         toast.error("Failed to send message");
       } else {
-        // refetch to get synced state
         await fetchMessages(selectedId);
       }
     } catch {
       toast.error("Connection error");
     } finally {
       setIsSending(false);
-    }
-  };
-
-  // resolve ticket
-  const handleResolve = async () => {
-    if (!selectedId || !user?.id) return;
-    setIsResolving(true);
-
-    try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/admin/incidents/${selectedId}/resolve`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            admin_id: user.id,
-            resolution: "Resolved by admin via support panel.",
-          }),
-        }
-      );
-
-      if (res.ok) {
-        toast.success("Ticket resolved");
-        fetchIncidents();
-        await fetchMessages(selectedId);
-      } else {
-        toast.error("Failed to resolve");
-      }
-    } catch {
-      toast.error("Connection error");
-    } finally {
-      setIsResolving(false);
     }
   };
 
@@ -322,40 +249,42 @@ export default function AdminSupportPage() {
     }
   };
 
-  const selected = incidents.find((i) => i._id === selectedId);
-  const isResolved = selected?.status === "resolved" || selected?.status === "closed";
+  const selected = chats.find((c) => c._id === selectedId);
+  const isClosed = selected?.status === "resolved" || selected?.status === "closed";
 
-  const filteredIncidents = search
-    ? incidents.filter(
-        (i) =>
-          i.incident_id.toLowerCase().includes(search.toLowerCase()) ||
-          i.title.toLowerCase().includes(search.toLowerCase()) ||
-          i.shipment?.tracking_id?.toLowerCase().includes(search.toLowerCase()) ||
-          i.shipment?.consumer?.name?.toLowerCase().includes(search.toLowerCase()) ||
-          i.shipment?.consumer?.email?.toLowerCase().includes(search.toLowerCase())
+  const filteredChats = search
+    ? chats.filter(
+        (c) =>
+          c.session_id.toLowerCase().includes(search.toLowerCase()) ||
+          c.visitor_name?.toLowerCase().includes(search.toLowerCase()) ||
+          c.visitor_email?.toLowerCase().includes(search.toLowerCase()) ||
+          c.last_message.toLowerCase().includes(search.toLowerCase())
       )
-    : incidents;
+    : chats;
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* left: tickets list */}
+      {/* left: chats list */}
       <div className="flex w-80 flex-col border-r overflow-hidden">
         <div className="shrink-0 border-b px-4 py-3">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <Headphones className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">Support Tickets</span>
+              <span className="text-sm font-semibold">Support Chats</span>
+              <span className="text-[10px] text-muted-foreground">
+                ({chats.length})
+              </span>
             </div>
             <Button
               variant="ghost"
               size="sm"
-              onClick={fetchIncidents}
+              onClick={fetchChats}
               className="h-7 w-7 p-0"
             >
               <RefreshCw
                 className={cn(
                   "h-3.5 w-3.5",
-                  isLoadingIncidents && "animate-spin"
+                  isLoadingChats && "animate-spin"
                 )}
               />
             </Button>
@@ -364,7 +293,7 @@ export default function AdminSupportPage() {
           <div className="relative mb-2">
             <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder="Search tickets..."
+              placeholder="Search chats..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="h-7 pl-7 text-xs"
@@ -375,7 +304,6 @@ export default function AdminSupportPage() {
             {(
               [
                 { value: "all", label: "All" },
-                { value: "escalated", label: "Escalated" },
                 { value: "open", label: "Open" },
                 { value: "resolved", label: "Resolved" },
               ] as const
@@ -397,7 +325,7 @@ export default function AdminSupportPage() {
         </div>
 
         <ScrollArea className="flex-1">
-          {isLoadingIncidents && incidents.length === 0 ? (
+          {isLoadingChats && chats.length === 0 ? (
             <div className="p-4 space-y-2">
               {[1, 2, 3, 4].map((i) => (
                 <div
@@ -406,24 +334,26 @@ export default function AdminSupportPage() {
                 />
               ))}
             </div>
-          ) : filteredIncidents.length === 0 ? (
+          ) : filteredChats.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
-              <Headphones className="h-8 w-8 text-muted-foreground/30" />
+              <MessageCircle className="h-8 w-8 text-muted-foreground/30" />
               <p className="mt-2 text-sm text-muted-foreground">
-                No tickets found
+                No chats found
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground/60 text-center px-6">
+                Chats from the n8n agent will appear here
               </p>
             </div>
           ) : (
-            filteredIncidents.map((incident) => {
-              const isActive = incident._id === selectedId;
-              const sc = statusColors[incident.status] || statusColors.open;
-              const lastMsg =
-                incident.chat_history?.[incident.chat_history.length - 1];
+            filteredChats.map((chat) => {
+              const isActive = chat._id === selectedId;
+              const sc =
+                statusColors[chat.status] || statusColors.open;
 
               return (
                 <div
-                  key={incident._id}
-                  onClick={() => handleSelectIncident(incident._id)}
+                  key={chat._id}
+                  onClick={() => handleSelectChat(chat._id)}
                   className={cn(
                     "cursor-pointer border-b border-border/30 px-4 py-3 transition-colors",
                     isActive
@@ -439,50 +369,33 @@ export default function AdminSupportPage() {
                         sc.text
                       )}
                     >
-                      {incident.status.replace(/_/g, " ")}
+                      {chat.status}
                     </span>
-                    {incident.is_escalated && (
-                      <AlertTriangle className="h-3 w-3 text-red-500" />
-                    )}
-                    <span
-                      className={cn(
-                        "text-[10px] font-medium",
-                        severityColors[incident.severity] ||
-                          "text-muted-foreground"
-                      )}
-                    >
-                      {incident.severity}
+                    <span className="text-[10px] text-muted-foreground/50">
+                      {chat.channel}
+                    </span>
+                    <span className="text-[9px] text-muted-foreground/40 ml-auto">
+                      {formatRelativeTime(chat.updated_at)}
                     </span>
                   </div>
 
-                  <p className="text-xs font-medium line-clamp-1">
-                    {incident.title}
-                  </p>
-
-                  {incident.shipment && (
-                    <div className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
-                      <span className="font-mono">
-                        {incident.shipment.tracking_id}
-                      </span>
-                      {incident.shipment.consumer && (
-                        <>
-                          <span>&middot;</span>
-                          <span>{incident.shipment.consumer.name}</span>
-                        </>
-                      )}
-                    </div>
-                  )}
-
-                  {lastMsg && (
-                    <p className="text-[10px] text-muted-foreground/60 mt-1 line-clamp-1">
-                      {lastMsg.is_human ? "You: " : ""}
-                      {lastMsg.content}
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <UserCircle className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <p className="text-xs font-medium truncate">
+                      {chat.visitor_name || chat.visitor_email || "Anonymous"}
                     </p>
-                  )}
+                  </div>
 
-                  <p className="text-[9px] text-muted-foreground/40 mt-1">
-                    {formatRelativeTime(incident.updated_at)}
+                  <p className="text-[10px] text-muted-foreground/60 line-clamp-2">
+                    {chat.last_message || "No messages"}
                   </p>
+
+                  <div className="flex items-center gap-2 mt-1 text-[9px] text-muted-foreground/40">
+                    <span>{chat.message_count} messages</span>
+                    <span className="font-mono truncate">
+                      {chat.session_id.slice(0, 12)}...
+                    </span>
+                  </div>
                 </div>
               );
             })
@@ -498,9 +411,9 @@ export default function AdminSupportPage() {
               <Headphones className="h-8 w-8 text-muted-foreground" />
             </div>
             <div className="text-center">
-              <p className="text-sm font-medium">Select a ticket</p>
+              <p className="text-sm font-medium">Select a chat</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Choose a support ticket to view and respond
+                Choose a conversation from the n8n agent to view and respond
               </p>
             </div>
           </div>
@@ -510,58 +423,37 @@ export default function AdminSupportPage() {
             <div className="border-border/40 flex h-12 shrink-0 items-center justify-between border-b px-4">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="bg-muted flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
-                  {selected.is_escalated ? (
-                    <AlertTriangle className="text-red-500 h-3.5 w-3.5" />
-                  ) : (
-                    <MessageCircle className="text-foreground h-3.5 w-3.5" />
-                  )}
+                  <MessageCircle className="text-foreground h-3.5 w-3.5" />
                 </div>
                 <div className="min-w-0">
                   <h1 className="text-foreground text-sm font-medium truncate">
-                    {selected.shipment?.consumer?.name || "Unknown Customer"}
+                    {selected.visitor_name || selected.visitor_email || "Anonymous"}
                   </h1>
                   <p className="text-muted-foreground text-[10px] truncate">
-                    {selected.incident_id} &middot;{" "}
-                    {selected.shipment?.tracking_id || "No shipment"}
+                    {selected.session_id.slice(0, 16)}... &middot;{" "}
+                    {selected.channel} &middot; {selected.message_count} msgs
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {!isResolved && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleResolve}
-                    disabled={isResolving}
-                    className="gap-1.5 text-xs text-emerald-600 border-emerald-500/30 hover:bg-emerald-500/10"
-                  >
-                    {isResolving ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <CheckCircle2 className="h-3 w-3" />
-                    )}
-                    Resolve
-                  </Button>
-                )}
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                    (statusColors[selected.status] || statusColors.open).bg,
+                    (statusColors[selected.status] || statusColors.open).text
+                  )}
+                >
+                  {selected.status}
+                </span>
               </div>
             </div>
 
-            {/* resolved banner */}
-            {isResolved && (
+            {isClosed && (
               <div className="bg-emerald-500/10 border-emerald-500/20 border-b px-4 py-2">
-                <p className="text-emerald-600 text-xs">
-                  This ticket has been resolved.
-                </p>
-              </div>
-            )}
-
-            {/* escalation banner */}
-            {selected.is_escalated && !isResolved && (
-              <div className="bg-red-500/10 border-red-500/20 border-b px-4 py-1.5">
-                <p className="text-red-500 text-xs flex items-center gap-1.5">
-                  <AlertTriangle className="h-3 w-3" />
-                  Escalated by customer — requires human response
+                <p className="text-emerald-600 text-xs flex items-center gap-1.5">
+                  <CheckCircle2 className="h-3 w-3" />
+                  This chat has been resolved.
                 </p>
               </div>
             )}
@@ -582,8 +474,13 @@ export default function AdminSupportPage() {
                   </div>
                 ) : (
                   messages.map((msg, idx) => {
-                    const isCustomer = msg.role === "user";
-                    const isHuman = msg.is_human;
+                    const isCustomer =
+                      msg.role === "user" || msg.role === "customer";
+                    const isAdmin = msg.role === "admin" && msg.is_human;
+                    const isAgent =
+                      msg.role === "assistant" ||
+                      msg.role === "ai" ||
+                      (msg.role === "admin" && !msg.is_human);
 
                     return (
                       <div
@@ -605,19 +502,19 @@ export default function AdminSupportPage() {
                               <>
                                 <UserCircle className="h-3 w-3 text-muted-foreground" />
                                 <span className="text-[10px] text-muted-foreground font-medium">
-                                  {selected.shipment?.consumer?.name || "Customer"}
+                                  {selected.visitor_name || "Customer"}
                                 </span>
                               </>
-                            ) : isHuman ? (
+                            ) : isAdmin ? (
                               <>
                                 <UserCircle className="h-3 w-3 text-primary" />
                                 <span className="text-[10px] text-primary font-medium">
-                                  {selected.assigned_agent?.name || "Admin"}
+                                  {msg.agent_name || "Admin"}
                                 </span>
                               </>
                             ) : (
                               <>
-                                <Bot className="h-3 w-3 text-muted-foreground" />
+                                <Headphones className="h-3 w-3 text-muted-foreground" />
                                 <span className="text-[10px] text-muted-foreground font-medium">
                                   AI Agent
                                 </span>
@@ -630,43 +527,21 @@ export default function AdminSupportPage() {
                               "relative max-w-full rounded-2xl px-4 py-2.5",
                               isCustomer
                                 ? "bg-muted rounded-bl-md"
-                                : isHuman
+                                : isAdmin
                                   ? "bg-primary text-primary-foreground rounded-br-md"
                                   : "bg-muted/60 border border-border/50 rounded-br-md"
                             )}
                           >
-                            <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                              {msg.content}
-                            </p>
+                            {isAgent ? (
+                              <div className="text-sm leading-relaxed">
+                                <MarkdownContent content={msg.content} />
+                              </div>
+                            ) : (
+                              <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                                {msg.content}
+                              </p>
+                            )}
                           </div>
-
-                          {/* action cards */}
-                          {msg.cards && msg.cards.length > 0 && (
-                            <div className="mt-1.5 flex flex-wrap gap-1.5">
-                              {msg.cards.map((card) => (
-                                <span
-                                  key={card.id}
-                                  className="border-border bg-muted/50 rounded-md border px-2 py-0.5 text-[10px] text-muted-foreground"
-                                >
-                                  {card.label}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* tools used */}
-                          {msg.tools_used && msg.tools_used.length > 0 && (
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {msg.tools_used.map((tool, i) => (
-                                <span
-                                  key={i}
-                                  className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono"
-                                >
-                                  {tool}
-                                </span>
-                              ))}
-                            </div>
-                          )}
 
                           <span className="text-muted-foreground/40 mt-1 text-[10px]">
                             {formatTime(msg.timestamp)}
@@ -697,11 +572,11 @@ export default function AdminSupportPage() {
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder={
-                      isResolved
-                        ? "Ticket is resolved"
+                      isClosed
+                        ? "Chat is closed"
                         : "Type your response..."
                     }
-                    disabled={isSending || isResolved}
+                    disabled={isSending || isClosed}
                     rows={1}
                     className="w-full resize-none border-none text-sm leading-relaxed shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
                     style={{ minHeight: "24px", maxHeight: "120px" }}
@@ -728,7 +603,7 @@ export default function AdminSupportPage() {
                           : "text-muted-foreground/50"
                       )}
                       onClick={handleSend}
-                      disabled={!input.trim() || isResolved}
+                      disabled={!input.trim() || isClosed}
                     >
                       <Send className="h-4 w-4" />
                     </Button>
@@ -748,37 +623,42 @@ export default function AdminSupportPage() {
         )}
       </div>
 
-      {/* right: customer context panel */}
-      {selected && selected.shipment && (
+      {/* right: chat context panel */}
+      {selected && (
         <div className="hidden w-72 xl:w-80 flex-col border-l xl:flex overflow-hidden">
           <div className="shrink-0 border-b px-4 py-3">
             <div className="flex items-center gap-2">
               <UserCircle className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Customer Info</span>
+              <span className="text-sm font-medium">Chat Info</span>
             </div>
           </div>
 
           <ScrollArea className="flex-1">
             <div className="p-4 space-y-4">
-              {/* customer details */}
-              {selected.shipment.consumer && (
-                <div className="space-y-1">
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    Customer
-                  </p>
-                  <p className="text-sm font-medium">
-                    {selected.shipment.consumer.name}
-                  </p>
+              {/* visitor details */}
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Visitor
+                </p>
+                <p className="text-sm font-medium">
+                  {selected.visitor_name || "Anonymous"}
+                </p>
+                {selected.visitor_email && (
                   <p className="text-xs text-muted-foreground">
-                    {selected.shipment.consumer.email}
+                    {selected.visitor_email}
                   </p>
-                </div>
-              )}
+                )}
+                {selected.visitor_id && (
+                  <p className="text-[10px] text-muted-foreground/60 font-mono">
+                    ID: {selected.visitor_id}
+                  </p>
+                )}
+              </div>
 
-              {/* incident details */}
+              {/* session details */}
               <div className="space-y-1.5 rounded-lg border border-border/50 p-3">
                 <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                  Incident
+                  Session
                 </p>
                 <div className="flex items-center gap-2">
                   <span
@@ -788,118 +668,52 @@ export default function AdminSupportPage() {
                       (statusColors[selected.status] || statusColors.open).text
                     )}
                   >
-                    {selected.status.replace(/_/g, " ")}
+                    {selected.status}
                   </span>
-                  <span
-                    className={cn(
-                      "text-[10px] font-medium",
-                      severityColors[selected.severity]
-                    )}
-                  >
-                    {selected.severity}
+                  <span className="text-[10px] text-muted-foreground">
+                    {selected.channel}
                   </span>
                 </div>
-                <p className="text-xs">{selected.title}</p>
-                {selected.description && (
-                  <p className="text-[11px] text-muted-foreground">
-                    {selected.description}
-                  </p>
-                )}
-                <p className="text-[10px] text-muted-foreground font-mono">
-                  {selected.incident_id}
+                <p className="text-[10px] text-muted-foreground font-mono break-all">
+                  {selected.session_id}
                 </p>
+                <div className="grid grid-cols-2 gap-2 text-[11px] mt-1">
+                  <div>
+                    <p className="text-[10px] text-muted-foreground">
+                      Messages
+                    </p>
+                    <p className="font-medium">{selected.message_count}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground">Channel</p>
+                    <p className="font-medium capitalize">{selected.channel}</p>
+                  </div>
+                </div>
               </div>
 
-              {/* shipment details */}
-              <div className="space-y-2 rounded-lg border border-border/50 p-3">
-                <div className="flex items-center gap-2">
-                  <Package className="h-3.5 w-3.5 text-muted-foreground" />
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    Shipment
-                  </p>
-                </div>
-
-                <p className="text-xs font-mono font-medium">
-                  {selected.shipment.tracking_id}
-                </p>
-
-                {/* route */}
-                <div className="flex items-center gap-1.5 text-xs">
-                  <span className="font-medium">
-                    {selected.shipment.origin?.city || "Origin"}
-                  </span>
-                  <ArrowRight className="h-3 w-3 text-muted-foreground shrink-0" />
-                  <span className="font-medium">
-                    {selected.shipment.destination?.city || "Destination"}
-                  </span>
-                </div>
-
-                {/* status and details grid */}
-                <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">Status</p>
-                    <p className="font-medium capitalize">
-                      {selected.shipment.status.replace(/_/g, " ")}
+              {/* metadata from n8n */}
+              {selected.metadata &&
+                Object.keys(selected.metadata).length > 0 && (
+                  <div className="space-y-1.5 rounded-lg border border-border/50 p-3">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Metadata
                     </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">
-                      Priority
-                    </p>
-                    <p className="font-medium capitalize">
-                      {selected.shipment.priority}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-muted-foreground">
-                      Risk Score
-                    </p>
-                    <p
-                      className={cn(
-                        "font-medium",
-                        selected.shipment.risk_score > 70
-                          ? "text-red-500"
-                          : selected.shipment.risk_score > 40
-                            ? "text-orange-500"
-                            : "text-emerald-500"
-                      )}
-                    >
-                      {selected.shipment.risk_score}
-                    </p>
-                  </div>
-                  {selected.shipment.carrier && (
-                    <div>
-                      <p className="text-[10px] text-muted-foreground">
-                        Carrier
-                      </p>
-                      <p className="font-medium">
-                        {selected.shipment.carrier.name}
-                      </p>
+                    <div className="space-y-1">
+                      {Object.entries(selected.metadata).map(([key, value]) => (
+                        <div key={key} className="flex justify-between text-[11px]">
+                          <span className="text-muted-foreground font-mono">
+                            {key}
+                          </span>
+                          <span className="font-medium text-right truncate max-w-[60%]">
+                            {typeof value === "object"
+                              ? JSON.stringify(value)
+                              : String(value)}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                </div>
-
-                {selected.shipment.sla_breached && (
-                  <div className="flex items-center gap-1.5 rounded bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-500">
-                    <AlertTriangle className="h-3 w-3" />
-                    SLA breached
                   </div>
                 )}
-
-                {selected.shipment.current_location?.city && (
-                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    Currently at {selected.shipment.current_location.city}
-                  </p>
-                )}
-
-                {selected.shipment.warehouse && (
-                  <p className="text-[10px] text-muted-foreground">
-                    Warehouse: {selected.shipment.warehouse.name} (
-                    {selected.shipment.warehouse.code})
-                  </p>
-                )}
-              </div>
 
               {/* timeline */}
               <div className="space-y-1.5">
@@ -909,17 +723,17 @@ export default function AdminSupportPage() {
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-[11px]">
                     <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40 shrink-0" />
-                    <span className="text-muted-foreground">Created</span>
+                    <span className="text-muted-foreground">Started</span>
                     <span className="text-[10px] text-muted-foreground/60 ml-auto">
                       {formatRelativeTime(selected.created_at)}
                     </span>
                   </div>
-                  {selected.escalated_at && (
+                  {selected.last_message_at && (
                     <div className="flex items-center gap-2 text-[11px]">
-                      <div className="h-1.5 w-1.5 rounded-full bg-red-500 shrink-0" />
-                      <span className="text-red-500">Escalated</span>
+                      <div className="h-1.5 w-1.5 rounded-full bg-primary/60 shrink-0" />
+                      <span className="text-muted-foreground">Last message</span>
                       <span className="text-[10px] text-muted-foreground/60 ml-auto">
-                        {formatRelativeTime(selected.escalated_at)}
+                        {formatRelativeTime(selected.last_message_at)}
                       </span>
                     </div>
                   )}
@@ -933,27 +747,37 @@ export default function AdminSupportPage() {
                 </div>
               </div>
 
-              {/* assigned agent */}
-              {selected.assigned_agent && (
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    Assigned Agent
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <div className="bg-primary/10 flex h-7 w-7 items-center justify-center rounded-full">
-                      <UserCircle className="h-4 w-4 text-primary" />
+              {/* message breakdown */}
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Participants
+                </p>
+                {(() => {
+                  const roleCounts: Record<string, number> = {};
+                  messages.forEach((m) => {
+                    const label =
+                      m.role === "user" || m.role === "customer"
+                        ? "Customer"
+                        : m.is_human
+                          ? "Admin"
+                          : "AI Agent";
+                    roleCounts[label] = (roleCounts[label] || 0) + 1;
+                  });
+                  return (
+                    <div className="space-y-1">
+                      {Object.entries(roleCounts).map(([role, count]) => (
+                        <div
+                          key={role}
+                          className="flex items-center justify-between text-[11px]"
+                        >
+                          <span className="text-muted-foreground">{role}</span>
+                          <span className="font-medium">{count} msgs</span>
+                        </div>
+                      ))}
                     </div>
-                    <div>
-                      <p className="text-xs font-medium">
-                        {selected.assigned_agent.name}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground">
-                        {selected.assigned_agent.email}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
+                  );
+                })()}
+              </div>
             </div>
           </ScrollArea>
         </div>

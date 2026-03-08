@@ -113,22 +113,6 @@ function getShipmentCoords(shipment: Shipment): {
     currentCoords = getCityCoords(shipment.current_location.city);
   }
 
-  // for in-transit without current location, simulate midpoint along route
-  if (!currentCoords && originCoords && destCoords && shipment.status === "in_transit") {
-    const fullRoute = getFullRouteCoords(shipment);
-    if (fullRoute.length >= 2) {
-      const midIdx = Math.floor(fullRoute.length * 0.45);
-      const a = fullRoute[Math.min(midIdx, fullRoute.length - 2)];
-      const b = fullRoute[Math.min(midIdx + 1, fullRoute.length - 1)];
-      currentCoords = [a[0] + (b[0] - a[0]) * 0.5, a[1] + (b[1] - a[1]) * 0.5];
-    } else {
-      currentCoords = [
-        originCoords[0] + (destCoords[0] - originCoords[0]) * 0.45,
-        originCoords[1] + (destCoords[1] - originCoords[1]) * 0.45,
-      ];
-    }
-  }
-
   // build waypoint coords
   const wpList = shipment.route_waypoints || [];
   const sortedWps = [...wpList].sort((a, b) => a.order - b.order);
@@ -138,6 +122,41 @@ function getShipmentCoords(shipment: Shipment): {
       ? [wp.lng, wp.lat] as [number, number]
       : getCityCoords(wp.city);
     if (c) waypoints.push({ coord: c, wp });
+  }
+
+  // for in-transit without current location, simulate midpoint between
+  // last departed waypoint and next pending waypoint (not destination)
+  if (!currentCoords && originCoords && shipment.status === "in_transit") {
+    const transitWps = sortedWps.filter(wp => wp.status === "in_transit");
+    const completedWps = sortedWps.filter(wp => wp.status === "completed");
+    const lastDeparted = transitWps.length > 0
+      ? transitWps[transitWps.length - 1]
+      : completedWps.length > 0
+        ? completedWps[completedWps.length - 1]
+        : null;
+
+    // next pending waypoint after the last departed
+    const lastDepartedOrder = lastDeparted?.order ?? 0;
+    const nextPending = sortedWps.find(wp => wp.order > lastDepartedOrder && wp.status === "pending");
+
+    const fromCoord = lastDeparted
+      ? (lastDeparted.lat && lastDeparted.lng
+          ? [lastDeparted.lng, lastDeparted.lat] as [number, number]
+          : getCityCoords(lastDeparted.city))
+      : originCoords;
+
+    const toCoord = nextPending
+      ? (nextPending.lat && nextPending.lng
+          ? [nextPending.lng, nextPending.lat] as [number, number]
+          : getCityCoords(nextPending.city))
+      : destCoords;
+
+    if (fromCoord && toCoord) {
+      currentCoords = [
+        fromCoord[0] + (toCoord[0] - fromCoord[0]) * 0.45,
+        fromCoord[1] + (toCoord[1] - fromCoord[1]) * 0.45,
+      ];
+    }
   }
 
   return { origin: originCoords, destination: destCoords, current: currentCoords, waypoints };
@@ -169,13 +188,14 @@ export default function LiveMapPage() {
   const markersRef = useRef<any[]>([]);
   const sourcesAdded = useRef<Set<string>>(new Set());
 
-  const { data, isLoading } = useShipments();
+  const { data, isLoading } = useShipments(undefined, { refetchInterval: 5000 });
   const shipments = data?.shipments ?? [];
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [mapLoaded, setMapLoaded] = useState(false);
+  const autoSelectedRef = useRef(false);
 
   const filtered = useMemo(() => {
     let result = shipments;
@@ -194,6 +214,14 @@ export default function LiveMapPage() {
     }
     return result;
   }, [shipments, statusFilter, searchQuery]);
+
+  // auto-select first shipment on initial load
+  useEffect(() => {
+    if (!autoSelectedRef.current && filtered.length > 0 && !selectedId) {
+      autoSelectedRef.current = true;
+      setSelectedId(filtered[0]._id);
+    }
+  }, [filtered, selectedId]);
 
   const selected = useMemo(
     () => shipments.find((s) => s._id === selectedId) || null,
@@ -306,8 +334,8 @@ export default function LiveMapPage() {
           markersRef.current.push(marker);
         }
 
-        // waypoint warehouse markers (only for selected or all if you want)
-        if (isSelected && coords.waypoints.length > 0) {
+        // waypoint warehouse markers
+        if (coords.waypoints.length > 0) {
           coords.waypoints.forEach(({ coord, wp }) => {
             const wpStatusColor = wp.status === "completed" ? "#10b981"
               : wp.status === "in_transit" ? "#0ea5e9"
@@ -326,11 +354,11 @@ export default function LiveMapPage() {
             el.addEventListener("click", () => setSelectedId(shipment._id));
             markersRef.current.push(marker);
 
-            // label for selected
+            // label showing warehouse name
             if (isSelected) {
               const label = document.createElement("div");
               label.style.cssText = `position:absolute;white-space:nowrap;font-size:9px;font-weight:600;color:white;background:${wpStatusColor};padding:1px 5px;border-radius:3px;transform:translateY(-20px);pointer-events:none;box-shadow:0 1px 2px rgba(0,0,0,0.3);`;
-              label.textContent = wp.city || wp.warehouse_code;
+              label.textContent = wp.warehouse_name || wp.city || wp.warehouse_code;
               const labelMarker = new mapboxgl.Marker({ element: label, anchor: "center" })
                 .setLngLat(coord)
                 .addTo(map);
@@ -414,21 +442,25 @@ export default function LiveMapPage() {
 
             sourcesAdded.current.add(sourceId);
 
-            // completed segments (solid line through completed waypoints)
+            // completed segments: solid green line from origin through completed/in_transit waypoints to carrier
             const waypoints = shipment.route_waypoints || [];
             const sorted = [...waypoints].sort((a, b) => a.order - b.order);
-            const completedWps = sorted.filter(wp => wp.status === "completed" || wp.status === "in_transit");
+            const completedWps = sorted.filter(wp => wp.status === "completed");
+            const inTransitWps = sorted.filter(wp => wp.status === "in_transit");
+            const traversedWps = [...completedWps, ...inTransitWps].sort((a, b) => a.order - b.order);
 
-            if (completedWps.length > 0 || coords.current) {
+            if (traversedWps.length > 0 || coords.current) {
               const completedCoords: [number, number][] = [coords.origin];
 
-              for (const wp of completedWps) {
+              // only add waypoints the carrier has actually passed through
+              for (const wp of traversedWps) {
                 const c = wp.lat && wp.lng
                   ? [wp.lng, wp.lat] as [number, number]
                   : getCityCoords(wp.city);
                 if (c) completedCoords.push(c);
               }
 
+              // end at carrier's current position (between waypoints)
               if (coords.current) {
                 completedCoords.push(coords.current);
               }
@@ -641,7 +673,7 @@ export default function LiveMapPage() {
                         <div key={i} className="flex items-center gap-1">
                           <ArrowRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
                           <div className="h-2 w-2 shrink-0 rotate-45 rounded-[1px]" style={{ background: wpColor }} />
-                          <span className="text-[10px] text-muted-foreground">{wp.city || wp.warehouse_code}</span>
+                          <span className="text-[10px] text-muted-foreground">{wp.warehouse_name || wp.city || wp.warehouse_code}</span>
                         </div>
                       );
                     })

@@ -1,59 +1,44 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   MessageCircle,
-  Send,
-  Loader2,
   Clock,
   Package,
   AlertTriangle,
   MapPin,
   Phone,
-  Bot,
-  RotateCcw,
-  ChevronRight,
+  Headphones,
   Plus,
   Search,
+  ChevronRight,
+  UserCircle,
+  ExternalLink,
 } from "lucide-react";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
-import { Textarea } from "~/components/ui/textarea";
 import { Input } from "~/components/ui/input";
 import { cn } from "~/lib/utils";
 import { toast } from "sonner";
 import useUser from "~/hooks/useUser";
 import { useMyShipments } from "~/hooks/useShipments";
+import { ChatInput } from "~/components/agent/ChatInput";
+import { ChatMessage } from "~/components/agent/ChatMessage";
+import { ThinkingIndicator } from "~/components/agent/ThinkingIndicator";
+import { AnimatePresence } from "framer-motion";
+import type { ChatMessage as ChatMessageType, ActionCard } from "~/components/agent/types";
+import type { AgentReasoning } from "~/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
-const WEBHOOK_URL =
-  process.env.NEXT_PUBLIC_WEBHOOK_URL ||
-  "https://abstruse.app.n8n.cloud/webhook/agent";
-
-interface ChatMsg {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: number;
-  isHuman?: boolean;
-  cards?: Array<{
-    id: string;
-    label: string;
-    style?: string;
-    action_payload?: Record<string, unknown>;
-  }>;
-  toolsUsed?: string[];
-  isThinking?: boolean;
-}
 
 interface SupportTicket {
   id: string;
-  sessionId: string;
+  ticketId: string;
   lastMessage: string;
   timestamp: string;
   messageCount: number;
   shipmentId?: string;
-  trackingId?: string;
+  status?: string;
 }
 
 const QUICK_ISSUES = [
@@ -67,8 +52,7 @@ const QUICK_ISSUES = [
     id: "not_delivered",
     label: "Shows delivered but not received",
     icon: Package,
-    message:
-      "My shipment shows as delivered but I haven't received it. Please help.",
+    message: "My shipment shows as delivered but I haven't received it. Please help.",
   },
   {
     id: "wrong_item",
@@ -80,34 +64,24 @@ const QUICK_ISSUES = [
     id: "tracking_issue",
     label: "Tracking not updating",
     icon: MapPin,
-    message:
-      "My shipment tracking hasn't updated in a while. Can you check what's happening?",
+    message: "My shipment tracking hasn't updated in a while. Can you check what's happening?",
   },
   {
     id: "eta_wrong",
     label: "ETA seems inaccurate",
     icon: Clock,
-    message:
-      "The estimated delivery time seems wrong for my shipment. Can you verify the ETA?",
+    message: "The estimated delivery time seems wrong for my shipment. Can you verify the ETA?",
   },
   {
     id: "contact_carrier",
     label: "Need to contact carrier",
     icon: Phone,
-    message:
-      "I need to get in touch with the carrier for my shipment. Can you help me with that?",
+    message: "I need to get in touch with the carrier for my shipment. Can you help me with that?",
   },
 ];
 
-function generateId() {
-  return `msg-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
-}
-
-function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function genId(prefix = "msg") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 }
 
 function formatRelativeTime(ts: string) {
@@ -118,46 +92,43 @@ function formatRelativeTime(ts: string) {
   if (days > 0) return `${days}d ago`;
   if (hours > 0) return `${hours}h ago`;
   if (minutes > 0) return `${minutes}m ago`;
-  return "just now";
+  return "now";
 }
 
-// thinking indicator component
-function ThinkingBubble() {
-  return (
-    <div className="flex justify-start">
-      <div className="flex max-w-[85%] flex-col items-start">
-        <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-3">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span className="animate-pulse">Thinking...</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+// converts raw reasoning object to AgentReasoning type
+function toAgentReasoning(raw: any): AgentReasoning | undefined {
+  if (!raw) return undefined;
+  return {
+    issue_type: raw.issue_type,
+    root_cause: raw.root_cause,
+    assumptions: raw.assumptions,
+    uncertainties: raw.uncertainties,
+  };
 }
+
+const WELCOME_MESSAGE: ChatMessageType = {
+  id: "welcome",
+  role: "assistant",
+  content:
+    "Hi! I'm your logistics support assistant. How can I help you today? You can select a common issue below or type your question.",
+  timestamp: Date.now(),
+};
 
 export default function SupportPage() {
   const { user } = useUser();
   const { data: shipmentsData } = useMyShipments();
   const shipments = shipmentsData?.shipments || [];
 
-  const [messages, setMessages] = useState<ChatMsg[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "Hi! I'm your logistics support assistant. How can I help you today? You can select a common issue below or type your question.",
-      timestamp: Date.now(),
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessageType[]>([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [ticketSearch, setTicketSearch] = useState("");
+  const [isEscalated, setIsEscalated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -174,81 +145,134 @@ export default function SupportPage() {
     scrollToBottom();
   }, [messages, isLoading, scrollToBottom]);
 
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "24px";
-      const sh = textareaRef.current.scrollHeight;
-      textareaRef.current.style.height = `${Math.min(sh, 120)}px`;
-    }
-  }, [input]);
-
-  // build shipment context for all active shipments
-  const buildShipmentContext = useCallback(() => {
-    if (shipments.length === 0) return null;
-    return shipments.map((s) => ({
-      case_id: s.case_id,
-      tracking_id: s.tracking_id,
-      status: s.status,
-      delay: s.delay,
-      carrier: s.carrier?.code || "unassigned",
-      origin: s.origin?.city,
-      destination: s.destination?.city,
-      sla_breached: s.sla_breached,
-      risk_score: s.risk_score,
-      estimated_delivery: s.estimated_delivery,
-      value: s.value,
-    }));
-  }, [shipments]);
-
   // fetch past tickets
   const fetchTickets = useCallback(async () => {
     if (!user?.id) return;
     try {
-      // get chat histories from shipments
-      const ticketList: SupportTicket[] = [];
-      for (const s of shipments) {
-        try {
-          const res = await fetch(
-            `${API_BASE_URL}/api/admin/incidents/${s._id}/messages`
-          );
-          if (res.ok) {
-            const data = await res.json();
-            const msgs = data.data?.messages || [];
-            if (msgs.length > 0) {
-              const lastMsg = msgs[msgs.length - 1];
-              ticketList.push({
-                id: s._id,
-                sessionId: s._id,
-                lastMessage:
-                  lastMsg.content?.substring(0, 80) + (lastMsg.content?.length > 80 ? "..." : ""),
-                timestamp: lastMsg.timestamp,
-                messageCount: msgs.length,
-                shipmentId: s._id,
-                trackingId: s.tracking_id,
-              });
-            }
-          }
-        } catch {
-          // skip
-        }
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/tickets?consumer_id=${user.id}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const ticketList: SupportTicket[] = (data.data?.tickets || []).map(
+          (t: any) => ({
+            id: t._id,
+            ticketId: t.ticket_id,
+            lastMessage: t.agent_message
+              ? t.agent_message.substring(0, 80) +
+                (t.agent_message.length > 80 ? "..." : "")
+              : t.subject || "No response yet",
+            timestamp: t.updated_at || t.created_at,
+            messageCount: (t.tools_used?.length || 0) + 1,
+            shipmentId: t.shipment_id,
+            status: t.status,
+          })
+        );
+        setTickets(ticketList);
       }
-      setTickets(ticketList);
     } catch {
       // silent
     }
-  }, [user?.id, shipments]);
+  }, [user?.id]);
 
   useEffect(() => {
     fetchTickets();
   }, [fetchTickets]);
 
-  const sendToAgent = async (content: string) => {
-    if (!content.trim() || isLoading) return;
+  // polling for escalated tickets - check for admin messages
+  useEffect(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
 
+    if (isEscalated && activeTicketId) {
+      const poll = async () => {
+        try {
+          const res = await fetch(
+            `${API_BASE_URL}/api/admin/tickets/${activeTicketId}/messages`
+          );
+          if (!res.ok) return;
+          const data = await res.json();
+          const rawMsgs = data.data?.messages || [];
+          if (rawMsgs.length === 0) return;
+
+          const loaded: ChatMessageType[] = rawMsgs.map(
+            (m: any, idx: number) => ({
+              id: `poll-${activeTicketId}-${idx}`,
+              role: m.role === "user" ? "user" : "assistant",
+              content: m.content,
+              timestamp: new Date(m.timestamp).getTime(),
+              cards: m.metadata?.cards,
+              toolsUsed: m.metadata?.tools_used,
+              actionsTaken: m.metadata?.actions_taken,
+              agentReasoning: toAgentReasoning(m.metadata?.reasoning),
+              confidenceScore: m.metadata?.confidence_score,
+              isHuman: m.is_human || m.role === "admin",
+            })
+          );
+
+          setMessages(loaded);
+        } catch {
+          // silent
+        }
+      };
+
+      pollingRef.current = setInterval(poll, 3000);
+      return () => {
+        if (pollingRef.current) clearInterval(pollingRef.current);
+      };
+    }
+  }, [isEscalated, activeTicketId]);
+
+  // load messages for a ticket
+  const loadTicketMessages = useCallback(
+    async (ticketId: string) => {
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/admin/tickets/${ticketId}/messages`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const rawMsgs = data.data?.messages || [];
+
+        if (rawMsgs.length === 0) {
+          setMessages([WELCOME_MESSAGE]);
+          return;
+        }
+
+        const loaded: ChatMessageType[] = rawMsgs.map(
+          (m: any, idx: number) => ({
+            id: `loaded-${ticketId}-${idx}`,
+            role: m.role === "user" ? "user" : "assistant",
+            content: m.content,
+            timestamp: new Date(m.timestamp).getTime(),
+            cards: m.metadata?.cards,
+            toolsUsed: m.metadata?.tools_used,
+            actionsTaken: m.metadata?.actions_taken,
+            agentReasoning: toAgentReasoning(m.metadata?.reasoning),
+            confidenceScore: m.metadata?.confidence_score,
+            isHuman: m.is_human || m.role === "admin",
+          })
+        );
+
+        setMessages(loaded);
+      } catch {
+        setMessages([WELCOME_MESSAGE]);
+      }
+    },
+    []
+  );
+
+  // send a message - creates ticket on first msg, follows up after
+  const sendMessage = useCallback(async () => {
+    if (!input.trim() || isLoading) return;
+
+    const content = input.trim();
     setIsLoading(true);
 
-    const userMsg: ChatMsg = {
-      id: generateId(),
+    const userMsg: ChatMessageType = {
+      id: genId("msg"),
       role: "user",
       content,
       timestamp: Date.now(),
@@ -257,76 +281,136 @@ export default function SupportPage() {
     setInput("");
 
     try {
-      const shipmentContext = buildShipmentContext();
+      const relevantShipment = shipments.length > 0 ? shipments[0] : null;
 
-      const payload = {
-        type: "customer_support",
-        consumer_id: user?.id || "anonymous",
-        consumer_name: user?.name || "Customer",
-        consumer_email: user?.email || "",
-        shipment_context: shipmentContext,
-        all_shipments: shipmentContext,
-        message: { content },
-      };
-
-      let agentMessage =
-        "I understand your concern. Let me look into this for you.";
-      let cards: ChatMsg["cards"] = [];
+      let agentMessage = "I understand your concern. Let me look into this.";
+      let cards: ActionCard[] = [];
       let toolsUsed: string[] = [];
+      let actionsTaken: string[] = [];
+      let reasoning: AgentReasoning | undefined;
+      let confidenceScore: number | undefined;
+      let complexityScore: number | undefined;
 
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/shipments/agent`, {
+      if (activeTicketId) {
+        // follow-up on existing ticket
+        const res = await fetch(
+          `${API_BASE_URL}/api/admin/tickets/${activeTicketId}/message`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              consumer_id: user?.id || null,
+              message: { content },
+            }),
+          }
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+          const agentRes = data.data?.agent_response;
+          const ticket = data.data?.ticket;
+
+          if (agentRes) {
+            if (agentRes.agent_message) agentMessage = agentRes.agent_message;
+            if (agentRes.cards) cards = agentRes.cards;
+            if (agentRes.tools_used) toolsUsed = agentRes.tools_used;
+            if (agentRes.actions_taken) actionsTaken = agentRes.actions_taken;
+            reasoning = toAgentReasoning(agentRes.reasoning);
+            confidenceScore = agentRes.confidence_score;
+            complexityScore = agentRes.complexity_score;
+          } else if (ticket?.agent_message) {
+            agentMessage = ticket.agent_message;
+            if (ticket.cards) cards = ticket.cards;
+            if (ticket.tools_used) toolsUsed = ticket.tools_used;
+          }
+        }
+      } else {
+        // create new ticket
+        const res = await fetch(`${API_BASE_URL}/api/admin/tickets`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            consumer_id: user?.id || "anonymous",
+            shipment_id: relevantShipment?._id || null,
+            consumer_id: user?.id || null,
             message: { content },
+            subject: content.substring(0, 100),
+            priority: "medium",
           }),
         });
 
         if (res.ok) {
           const data = await res.json();
-          const d = data.data || data;
-          if (d.agent_message) agentMessage = d.agent_message;
-          if (d.cards) cards = d.cards;
-          if (d.tools_used) toolsUsed = d.tools_used;
-        }
-      } catch {
-        try {
-          const webhookRes = await fetch(WEBHOOK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          if (webhookRes.ok) {
-            const webhookData = await webhookRes.json();
-            const wd = webhookData.output || webhookData;
-            if (wd.agent_message || wd.message)
-              agentMessage = wd.agent_message || wd.message;
-            if (wd.cards) cards = wd.cards;
-            if (wd.tools_used) toolsUsed = wd.tools_used;
+          const ticket = data.data?.ticket;
+          const agentRes = data.data?.agent_response;
+          const chatId = data.data?.chat_id;
+
+          // store ticket and chat ids for follow-ups
+          if (ticket?._id) {
+            setActiveTicketId(ticket._id);
           }
-        } catch {
-          // both failed
+          if (chatId) {
+            setActiveChatId(chatId);
+          }
+
+          if (agentRes) {
+            if (agentRes.agent_message) agentMessage = agentRes.agent_message;
+            if (agentRes.cards) cards = agentRes.cards;
+            if (agentRes.tools_used) toolsUsed = agentRes.tools_used;
+            if (agentRes.actions_taken) actionsTaken = agentRes.actions_taken;
+            reasoning = toAgentReasoning(agentRes.reasoning);
+            confidenceScore = agentRes.confidence_score;
+            complexityScore = agentRes.complexity_score;
+          } else if (ticket?.agent_message) {
+            agentMessage = ticket.agent_message;
+            if (ticket.cards) cards = ticket.cards;
+            if (ticket.tools_used) toolsUsed = ticket.tools_used;
+          }
+        } else {
+          // fallback to direct agent endpoint
+          try {
+            const fallbackRes = await fetch(
+              `${API_BASE_URL}/api/shipments/agent`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  consumer_id: user?.id || "anonymous",
+                  message: { content },
+                }),
+              }
+            );
+            if (fallbackRes.ok) {
+              const fbData = await fallbackRes.json();
+              const d = fbData.data || fbData;
+              if (d.agent_message) agentMessage = d.agent_message;
+              if (d.cards) cards = d.cards;
+              if (d.tools_used) toolsUsed = d.tools_used;
+            }
+          } catch {
+            // silent
+          }
         }
       }
 
-      const assistantMsg: ChatMsg = {
-        id: generateId(),
+      const assistantMsg: ChatMessageType = {
+        id: genId("msg"),
         role: "assistant",
         content: agentMessage,
         timestamp: Date.now(),
-        cards: cards?.length ? cards : undefined,
-        toolsUsed: toolsUsed?.length ? toolsUsed : undefined,
+        cards: cards.length > 0 ? cards : undefined,
+        toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
+        actionsTaken: actionsTaken.length > 0 ? actionsTaken : undefined,
+        agentReasoning: reasoning,
+        confidenceScore,
+        complexityScore,
+        isHuman: false,
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
-
-      // refresh tickets after sending
       setTimeout(fetchTickets, 1000);
     } catch {
-      const errorMsg: ChatMsg = {
-        id: generateId(),
+      const errorMsg: ChatMessageType = {
+        id: genId("msg"),
         role: "assistant",
         content:
           "I'm having trouble connecting right now. Please try again in a moment.",
@@ -336,61 +420,131 @@ export default function SupportPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [input, isLoading, activeTicketId, user?.id, shipments, fetchTickets]);
 
-  // action buttons fill input instead of auto-sending
-  const handleCardClick = (card: NonNullable<ChatMsg["cards"]>[number]) => {
-    setInput(card.label);
-    textareaRef.current?.focus();
-  };
+  // handle action card clicks - execute actions directly
+  const handleActionClick = useCallback(
+    async (card: ActionCard) => {
+      // link type - open in new tab
+      if (card.type === "link" && card.url) {
+        window.open(card.url, "_blank");
+        return;
+      }
 
-  const handleQuickIssue = (issue: (typeof QUICK_ISSUES)[number]) => {
-    setInput(issue.message);
-    textareaRef.current?.focus();
-  };
+      // escalation actions
+      const isEscalation =
+        card.label?.toLowerCase().includes("talk to human") ||
+        card.label?.toLowerCase().includes("human agent") ||
+        card.label?.toLowerCase().includes("escalate") ||
+        card.action_payload?.action_type === "escalate";
 
-  const handleNewConversation = () => {
-    setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        content:
-          "Hi! I'm your logistics support assistant. How can I help you today?",
-        timestamp: Date.now(),
-      },
-    ]);
-    setActiveTicketId(null);
-    setInput("");
-  };
+      if (isEscalation) {
+        if (!activeTicketId) {
+          toast.error("No active conversation to escalate");
+          return;
+        }
 
-  const handleSubmit = () => {
-    if (!input.trim() || isLoading) return;
-    sendToAgent(input.trim());
-  };
+        setIsLoading(true);
+        try {
+          const res = await fetch(
+            `${API_BASE_URL}/api/admin/tickets/${activeTicketId}/escalate`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                reason: (card.action_payload?.params as Record<string, unknown>)?.reason || "User requested human agent",
+              }),
+            }
+          );
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
+          const systemMsg: ChatMessageType = {
+            id: genId("msg"),
+            role: "assistant",
+            content:
+              "You've been connected to a human agent. They will respond to you shortly.",
+            timestamp: Date.now(),
+            isHuman: true,
+          };
+
+          setMessages((prev) => [...prev, systemMsg]);
+          setIsEscalated(true);
+
+          toast.success("Connected to human support", {
+            description: "A support agent will respond shortly.",
+          });
+        } catch {
+          toast.error("Failed to connect to human support");
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      // generic action - send as follow-up message with action context
+      if (card.action_payload) {
+        toast.info(`Action "${card.label}" triggered`, {
+          description: "Processing your request...",
+        });
+
+        const actionMsg: ChatMessageType = {
+          id: genId("msg"),
+          role: "assistant",
+          content: `I've processed your request for "${card.label}". Is there anything else I can help with?`,
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, actionMsg]);
+        return;
+      }
+
+      // fallback - fill the input with the label
+      setInput(card.label);
+    },
+    [activeTicketId]
+  );
+
+  const handleNewConversation = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
     }
-  };
+    setMessages([WELCOME_MESSAGE]);
+    setActiveTicketId(null);
+    setActiveChatId(null);
+    setIsEscalated(false);
+    setInput("");
+  }, []);
 
-  const showQuickIssues = messages.length <= 2 && !isLoading;
+  const handleSelectTicket = useCallback(
+    async (ticket: SupportTicket) => {
+      setActiveTicketId(ticket.id);
+      setIsEscalated(false);
+      await loadTicketMessages(ticket.id);
+    },
+    [loadTicketMessages]
+  );
 
-  const filteredTickets = ticketSearch
-    ? tickets.filter(
-        (t) =>
-          t.trackingId?.toLowerCase().includes(ticketSearch.toLowerCase()) ||
-          t.lastMessage.toLowerCase().includes(ticketSearch.toLowerCase())
-      )
-    : tickets;
+  const handleQuickIssue = useCallback((issue: (typeof QUICK_ISSUES)[number]) => {
+    setInput(issue.message);
+  }, []);
+
+  const showQuickIssues = messages.length <= 1 && !isLoading && !activeTicketId;
+
+  const filteredTickets = useMemo(() => {
+    if (!ticketSearch) return tickets;
+    const q = ticketSearch.toLowerCase();
+    return tickets.filter(
+      (t) =>
+        t.ticketId?.toLowerCase().includes(q) ||
+        t.lastMessage.toLowerCase().includes(q)
+    );
+  }, [tickets, ticketSearch]);
 
   return (
     <div className="flex h-full overflow-hidden">
       {/* left: past tickets sidebar */}
       <div className="hidden w-64 flex-col border-r lg:flex">
         <div className="shrink-0 border-b px-3 py-3">
-          <div className="flex items-center justify-between mb-2">
+          <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <MessageCircle className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm font-medium">Support</span>
@@ -424,64 +578,75 @@ export default function SupportPage() {
             className={cn(
               "flex w-full items-center gap-2 border-b border-border/30 px-3 py-2.5 text-left transition-colors",
               !activeTicketId
-                ? "bg-primary/5 border-l-2 border-l-primary"
-                : "hover:bg-muted/30 border-l-2 border-l-transparent"
+                ? "border-l-primary bg-primary/5 border-l-2"
+                : "border-l-transparent hover:bg-muted/30 border-l-2"
             )}
           >
             <div className="bg-primary/10 flex h-7 w-7 shrink-0 items-center justify-center rounded-md">
-              <Bot className="h-3.5 w-3.5 text-primary" />
+              <Headphones className="text-primary h-3.5 w-3.5" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium">New Conversation</p>
-              <p className="text-[10px] text-muted-foreground truncate">
-                Start fresh with the agent
+              <p className="text-muted-foreground truncate text-[10px]">
+                Start a new support thread
               </p>
             </div>
           </button>
 
           {/* past tickets */}
           {filteredTickets.length > 0 && (
-            <div className="px-3 pt-2 pb-1">
-              <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Past Tickets
+            <div className="px-3 pb-1 pt-2">
+              <p className="text-muted-foreground text-[10px] font-medium uppercase tracking-wider">
+                Recent Tickets
               </p>
             </div>
           )}
           {filteredTickets.map((ticket) => (
             <button
               key={ticket.id}
-              onClick={() => setActiveTicketId(ticket.id)}
+              onClick={() => handleSelectTicket(ticket)}
               className={cn(
                 "flex w-full items-start gap-2 border-b border-border/30 px-3 py-2.5 text-left transition-colors",
                 activeTicketId === ticket.id
-                  ? "bg-primary/5 border-l-2 border-l-primary"
-                  : "hover:bg-muted/30 border-l-2 border-l-transparent"
+                  ? "border-l-primary bg-primary/5 border-l-2"
+                  : "border-l-transparent hover:bg-muted/30 border-l-2"
               )}
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-1">
-                  <span className="text-[10px] font-mono text-muted-foreground truncate">
-                    {ticket.trackingId || "General"}
+                  <span className="text-muted-foreground truncate font-mono text-[10px]">
+                    {ticket.ticketId || "General"}
                   </span>
-                  <span className="text-[9px] text-muted-foreground/60 shrink-0">
+                  <span className="text-muted-foreground/60 shrink-0 text-[9px]">
                     {formatRelativeTime(ticket.timestamp)}
                   </span>
                 </div>
-                <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
+                <p className="text-muted-foreground mt-0.5 line-clamp-2 text-[11px]">
                   {ticket.lastMessage}
                 </p>
-                <span className="text-[9px] text-muted-foreground/50 mt-0.5">
-                  {ticket.messageCount} messages
-                </span>
+                {ticket.status && (
+                  <span
+                    className={cn(
+                      "mt-0.5 inline-block rounded px-1 py-0.5 text-[9px] font-medium",
+                      ticket.status === "active"
+                        ? "bg-sky-500/10 text-sky-400"
+                        : ticket.status === "resolved"
+                          ? "bg-emerald-500/10 text-emerald-400"
+                          : "bg-muted text-muted-foreground"
+                    )}
+                  >
+                    {ticket.status}
+                  </span>
+                )}
               </div>
-              <ChevronRight className="h-3 w-3 shrink-0 mt-1 text-muted-foreground/30" />
+              <ChevronRight className="text-muted-foreground/30 mt-1 h-3 w-3 shrink-0" />
             </button>
           ))}
 
           {filteredTickets.length === 0 && tickets.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-10 px-4">
-              <MessageCircle className="h-6 w-6 text-muted-foreground/30" />
-              <p className="mt-2 text-[11px] text-muted-foreground/50 text-center">
+            <div className="flex flex-col items-center justify-center px-4 py-10">
+              <MessageCircle className="text-muted-foreground/30 h-6 w-6" />
+              <p className="text-muted-foreground/50 mt-2 text-center text-[11px]">
                 No past conversations yet
               </p>
             </div>
@@ -492,112 +657,65 @@ export default function SupportPage() {
       {/* center: chat area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* header */}
-        <div className="border-border/40 flex h-12 shrink-0 items-center justify-between border-b px-4">
+        <div className="border-border/40 flex h-14 shrink-0 items-center justify-between border-b px-4">
           <div className="flex items-center gap-2">
-            <div className="bg-muted flex h-7 w-7 items-center justify-center rounded-lg">
-              <Bot className="text-foreground h-3.5 w-3.5" />
+            <div className="bg-muted flex h-8 w-8 items-center justify-center rounded-lg">
+              {isEscalated ? (
+                <UserCircle className="text-primary h-4 w-4" />
+              ) : (
+                <MessageCircle className="text-foreground h-4 w-4" />
+              )}
             </div>
             <div>
               <h1 className="text-foreground text-sm font-medium">
-                Support Assistant
+                {isEscalated ? "Human Support" : "Support"}
               </h1>
+              <p className="text-muted-foreground text-xs">
+                {isEscalated
+                  ? "Connected to agent"
+                  : activeTicketId
+                    ? "Ongoing conversation"
+                    : "New conversation"}
+              </p>
             </div>
           </div>
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleNewConversation}
-            className="gap-1.5 text-xs"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            New
-          </Button>
+          {activeTicketId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleNewConversation}
+              className="gap-1.5 text-xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              New
+            </Button>
+          )}
         </div>
+
+        {/* escalation banner */}
+        {isEscalated && (
+          <div className="border-primary/20 bg-primary/10 border-b px-4 py-2">
+            <p className="text-primary text-xs">
+              You're now chatting with a human agent. They'll respond shortly.
+            </p>
+          </div>
+        )}
 
         {/* messages */}
         <ScrollArea className="flex-1" ref={scrollRef}>
           <div className="flex flex-col gap-4 p-4">
-            {messages.map((msg) => {
-              if (msg.role === "system") {
-                return (
-                  <div key={msg.id} className="flex justify-center">
-                    <span className="bg-muted text-muted-foreground rounded-full px-3 py-1 text-[11px]">
-                      {msg.content}
-                    </span>
-                  </div>
-                );
-              }
+            {messages.map((msg) => (
+              <ChatMessage
+                key={msg.id}
+                message={msg}
+                onAction={handleActionClick}
+              />
+            ))}
 
-              const isUser = msg.role === "user";
-
-              return (
-                <div
-                  key={msg.id}
-                  className={cn(
-                    "flex w-full gap-3",
-                    isUser ? "justify-end" : "justify-start"
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "flex max-w-[85%] min-w-0 flex-col",
-                      isUser ? "items-end" : "items-start"
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        "relative max-w-full rounded-2xl px-4 py-2.5",
-                        isUser
-                          ? "bg-primary text-primary-foreground rounded-br-md"
-                          : msg.isHuman
-                            ? "bg-primary/10 border-primary/20 border rounded-bl-md"
-                            : "bg-muted rounded-bl-md"
-                      )}
-                    >
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                        {msg.content}
-                      </p>
-                    </div>
-
-                    {/* tools used */}
-                    {!isUser && msg.toolsUsed && msg.toolsUsed.length > 0 && (
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        {msg.toolsUsed.map((tool, i) => (
-                          <span
-                            key={i}
-                            className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono"
-                          >
-                            {tool}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* action cards - fill input instead of sending */}
-                    {!isUser && msg.cards && msg.cards.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {msg.cards.map((card) => (
-                          <button
-                            key={card.id}
-                            onClick={() => handleCardClick(card)}
-                            className="border-border bg-background hover:bg-muted rounded-md border px-2.5 py-1 text-xs transition-colors"
-                          >
-                            {card.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    <span className="text-muted-foreground/50 mt-1 text-[10px]">
-                      {formatTime(msg.timestamp)}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-
-            {isLoading && <ThinkingBubble />}
+            <AnimatePresence mode="wait">
+              {isLoading && <ThinkingIndicator key="thinking" />}
+            </AnimatePresence>
 
             {/* quick issue suggestions */}
             {showQuickIssues && (
@@ -630,76 +748,35 @@ export default function SupportPage() {
         </ScrollArea>
 
         {/* input */}
-        <div className="border-border/40 bg-background border-t p-3">
-          <div className="bg-input/20 flex flex-col rounded-xl ring-1 ring-transparent transition-all focus-within:ring-border/50">
-            <div className="px-3 py-3">
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type your message..."
-                disabled={isLoading}
-                rows={1}
-                className="w-full resize-none border-none text-sm leading-relaxed shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
-                style={{ minHeight: "24px", maxHeight: "120px" }}
-              />
-            </div>
-            <div className="flex items-center justify-end px-2 pb-2">
-              {isLoading ? (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-8 w-8"
-                  disabled
-                >
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                </Button>
-              ) : (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className={cn(
-                    "h-8 w-8 transition-colors",
-                    input.trim()
-                      ? "text-foreground hover:bg-muted"
-                      : "text-muted-foreground/50"
-                  )}
-                  onClick={handleSubmit}
-                  disabled={!input.trim()}
-                >
-                  <Send className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          </div>
-          <div className="text-muted-foreground/50 mt-1.5 flex items-center justify-center gap-3 text-[10px]">
-            <span>
-              <kbd className="text-muted-foreground/70">↵</kbd> send
-            </span>
-            <span>
-              <kbd className="text-muted-foreground/70">⇧↵</kbd> new line
-            </span>
-          </div>
-        </div>
+        <ChatInput
+          value={input}
+          onChange={setInput}
+          onSubmit={sendMessage}
+          isLoading={isLoading}
+          placeholder={
+            isEscalated
+              ? "Message human agent..."
+              : "Type your message..."
+          }
+        />
       </div>
 
       {/* right: active shipments context panel */}
       <div className="hidden w-72 flex-col border-l xl:flex">
         <div className="shrink-0 border-b px-4 py-3">
           <div className="flex items-center gap-2">
-            <Package className="h-4 w-4 text-muted-foreground" />
+            <Package className="text-muted-foreground h-4 w-4" />
             <span className="text-sm font-medium">Your Shipments</span>
           </div>
-          <p className="text-[10px] text-muted-foreground mt-0.5">
+          <p className="text-muted-foreground mt-0.5 text-[10px]">
             Agent has context about all your shipments
           </p>
         </div>
         <ScrollArea className="flex-1">
           {shipments.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 px-4">
-              <Package className="h-6 w-6 text-muted-foreground/30" />
-              <p className="mt-2 text-xs text-muted-foreground/50 text-center">
+            <div className="flex flex-col items-center justify-center px-4 py-16">
+              <Package className="text-muted-foreground/30 h-6 w-6" />
+              <p className="text-muted-foreground/50 mt-2 text-center text-xs">
                 No active shipments
               </p>
             </div>
@@ -722,20 +799,20 @@ export default function SupportPage() {
                     className="border-b border-border/30 px-4 py-3"
                   >
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium font-mono truncate">
+                      <span className="truncate font-mono text-xs font-medium">
                         {s.tracking_id}
                       </span>
                       <span
                         className={cn(
-                          "h-1.5 w-1.5 rounded-full shrink-0",
+                          "h-1.5 w-1.5 shrink-0 rounded-full",
                           statusColors[s.status] || "bg-zinc-400"
                         )}
                       />
                     </div>
-                    <p className="text-muted-foreground mt-0.5 text-[11px] truncate">
+                    <p className="text-muted-foreground mt-0.5 truncate text-[11px]">
                       {s.origin?.city || "?"} → {s.destination?.city || "?"}
                     </p>
-                    <div className="mt-1 flex items-center gap-2 flex-wrap">
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="text-muted-foreground text-[10px] capitalize">
                         {s.status.replace(/_/g, " ")}
                       </span>
@@ -745,7 +822,7 @@ export default function SupportPage() {
                         </span>
                       )}
                       {s.sla_breached && (
-                        <span className="text-[10px] text-red-600 font-medium">
+                        <span className="text-[10px] font-medium text-red-600">
                           SLA
                         </span>
                       )}
@@ -756,7 +833,7 @@ export default function SupportPage() {
                       )}
                     </div>
                     {s.carrier && (
-                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                      <p className="text-muted-foreground/60 mt-0.5 text-[10px]">
                         Carrier: {s.carrier.name}
                       </p>
                     )}

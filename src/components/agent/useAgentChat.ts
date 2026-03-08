@@ -27,21 +27,14 @@ function detectActionType(card: ActionCard): ActionType {
   const label = (card.label || "").toLowerCase();
   const webhookPath = (card.action_payload?.webhook_to_call || "").toLowerCase();
 
-  if (label.includes("update doc") || label.includes("documentation") || webhookPath.includes("/docs")) {
-    return "update_docs";
-  }
-  if (label.includes("github") || label.includes("issue") || webhookPath.includes("/github")) {
-    return "create_github_issue";
-  }
+
   if (label.includes("human") || label.includes("escalate") || label.includes("talk to")) {
     return "escalate";
   }
   if (label.includes("webhook") || label.includes("resend")) {
     return "resend_webhook";
   }
-  if (label.includes("api key") || label.includes("rotate")) {
-    return "rotate_api_keys";
-  }
+
 
   return "generic";
 }
@@ -196,9 +189,11 @@ export function useAgentChat() {
     setIsLoading(true);
 
     try {
-      // build payload
+      // build payload matching backend's sendAgentMessage expectations
       const payload = {
         _id: currentTicketId,
+        shipment_id: null,
+        consumer_id: user.id,
         merchant_id: user.id,
         message: {
           content: userMessage.content,
@@ -343,91 +338,6 @@ export function useAgentChat() {
         setIsLoading(true);
 
         try {
-          // handle update_docs action
-          if (actionType === "update_docs") {
-            const params = card.action_payload.params || {};
-
-            // show loading toast
-            toast.loading("Updating documentation...", { id: "docs-update" });
-
-            // intentional 2s delay for visual feedback
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-
-            const response = await fetch(config.api.shipments.agent, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                operation: params.operation || "add",
-                section: params.section || "general",
-                content: params.content || card.label,
-              }),
-            });
-
-            const result = await response.json();
-            console.log("[Agent] Docs update result:", result);
-
-            // dismiss loading toast
-            toast.dismiss("docs-update");
-
-            if (response.ok) {
-              toast.success("Documentation Updated", {
-                description: result.data?.action_taken || "Documentation has been updated successfully.",
-              });
-
-              const actionMessage: ChatMessage = {
-                id: generateId("msg"),
-                role: "assistant",
-                content: `I've updated the documentation. ${result.data?.action_taken || "The changes have been applied."} You can view the updated docs at /api/docs`,
-                timestamp: Date.now(),
-                actionsTaken: ["update_docs"],
-              };
-              setMessages((prev) => [...prev, actionMessage]);
-            } else {
-              throw new Error(result.message || "Failed to update documentation");
-            }
-          }
-          // handle create_github_issue action
-          else if (actionType === "create_github_issue") {
-            const params = card.action_payload.params || {};
-            const response = await fetch(config.api.shipments.agent, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                title: params.title || "Support Ticket Issue",
-                description: params.description || "Issue reported via support system",
-                issue_type: params.issue_type || "bug",
-                severity: params.severity || "medium",
-                merchant_id: getUser()?.id,
-                ticket_id: currentTicketId,
-                error_code: params.error_code,
-                reproduction_steps: params.reproduction_steps,
-                expected_behavior: params.expected_behavior,
-                actual_behavior: params.actual_behavior,
-              }),
-            });
-
-            const result = await response.json();
-            console.log("[Agent] GitHub issue result:", result);
-
-            if (response.ok) {
-              toast.success("GitHub Issue Created", {
-                description: `Issue "${params.title || "Support Ticket Issue"}" has been created.`,
-              });
-
-              const actionMessage: ChatMessage = {
-                id: generateId("msg"),
-                role: "assistant",
-                content: `I've created a GitHub issue for the engineering team to investigate. They will review and address this issue. Is there anything else I can help you with?`,
-                timestamp: Date.now(),
-                actionsTaken: ["github_issue"],
-              };
-              setMessages((prev) => [...prev, actionMessage]);
-            } else {
-              throw new Error(result.message || "Failed to create GitHub issue");
-            }
-          }
-          // handle generic actions
-          else {
             toast.info(`Action "${card.label}" triggered`, {
               description: "Processing your request...",
             });
@@ -439,9 +349,8 @@ export function useAgentChat() {
               timestamp: Date.now(),
             };
             setMessages((prev) => [...prev, actionMessage]);
-          }
-        } catch (error) {
-          console.error("[Agent] Action error:", error);
+
+        } catch (error) {console.log("[Agent] Action error:", error);
           toast.error(`Failed to execute "${card.label}"`, {
             description: error instanceof Error ? error.message : "An error occurred",
           });

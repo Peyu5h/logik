@@ -9,6 +9,18 @@ import {
   resolveIncident,
   updateIncidentSeverity,
   getDashboardStats,
+  getChats,
+  getChatById,
+  getChatMessages,
+  sendChatMessage,
+  getSupportTickets,
+  getSupportTicketById,
+  getSupportTicketMessages,
+  createSupportTicket,
+  sendTicketMessage,
+  escalateTicketHandler,
+  getAgentLogs,
+  getAgentLogById,
 } from "../controllers/adminController.js";
 
 const router = Router();
@@ -39,5 +51,23 @@ router.patch("/incidents/:incidentId/resolve", resolveIncident);
 
 // update incident severity
 router.patch("/incidents/:incidentId/severity", updateIncidentSeverity);
+
+// n8n agent chats collection endpoints
+router.get("/chats", getChats);
+router.get("/chats/:chatId", getChatById);
+router.get("/chats/:chatId/messages", getChatMessages);
+router.post("/chats/:chatId/message", sendChatMessage);
+
+// support tickets (linked to n8n agent via webhook)
+router.get("/tickets", getSupportTickets);
+router.get("/tickets/:ticketId", getSupportTicketById);
+router.get("/tickets/:ticketId/messages", getSupportTicketMessages);
+router.post("/tickets", createSupportTicket);
+router.post("/tickets/:ticketId/message", sendTicketMessage);
+router.post("/tickets/:ticketId/escalate", escalateTicketHandler);
+
+// agent execution logs (OODA loop)
+router.get("/agent-logs", getAgentLogs);
+router.get("/agent-logs/:logId", getAgentLogById);
 
 export default router;

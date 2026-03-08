@@ -435,6 +435,49 @@ export interface CreateLogPayload {
   metadata?: Record<string, unknown>;
 }
 
+// support ticket types
+
+export interface SupportTicket {
+  _id: string;
+  ticket_id: string;
+  shipment_id: string | null;
+  consumer_id: string | null;
+  subject: string | null;
+  status: string;
+  priority: string;
+  category: string | null;
+  resolution: string | null;
+  agent_message: string | null;
+  confidence: number | null;
+  complexity: number | null;
+  tools_used: string[];
+  actions_taken: string[];
+  reasoning: AgentReasoning | null;
+  cards: ActionCard[] | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// agent execution log types (OODA loop)
+
+export interface AgentExecutionLog {
+  _id: string;
+  session_id: string | null;
+  trigger_type: string | null;
+  shipment_id: string | null;
+  observe: string | null;
+  reason: string | null;
+  decide: string | null;
+  act: string | null;
+  learn: string | null;
+  confidence: number | null;
+  status: string;
+  duration: number | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
 // auth types
 
 export interface SignInRequest {

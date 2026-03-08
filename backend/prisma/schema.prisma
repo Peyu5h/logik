@@ -177,6 +177,34 @@ model ChatHistory {
   @@map("chat_histories")
 }
 
+model Chat {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId    String     @unique
+  visitorId    String?
+  visitorName  String?
+  visitorEmail String?
+  status       String     @default("open")
+  channel      String     @default("web")
+  metadata     Json?
+  messages     ChatMsg[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([visitorId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("chats")
+}
+
+type ChatMsg {
+  role      String
+  content   String
+  timestamp DateTime @default(now())
+  isHuman   Boolean  @default(false)
+  agentName String?
+  metadata  Json?
+}
+
 model Log {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   logId     String   @unique
@@ -215,6 +243,56 @@ model AgentAction {
   @@index([actionType])
   @@index([executedAt])
   @@map("agent_actions")
+}
+
+model SupportTicket {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  ticketId    String   @unique
+  shipmentId  String?  @db.ObjectId
+  consumerId  String?  @db.ObjectId
+  subject     String?
+  status      String   @default("open")
+  priority    String   @default("medium")
+  category    String?
+  resolution  String?
+  agentMessage String?
+  confidence  Float?
+  complexity  Float?
+  toolsUsed   String[]
+  actionsTaken String[]
+  reasoning   Json?
+  cards       Json?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([shipmentId])
+  @@index([consumerId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("support_tickets")
+}
+
+model AgentLog {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId   String?
+  triggerType String?
+  shipmentId  String?
+  observe     String?
+  reason      String?
+  decide      String?
+  act         String?
+  learn       String?
+  confidence  Float?    @default(0)
+  status      String    @default("completed")
+  duration    Int?
+  metadata    Json?
+  createdAt   DateTime? @default(now())
+
+  @@index([sessionId])
+  @@index([triggerType])
+  @@index([createdAt])
+  @@map("agent_logs")
 }
 
 type Location {

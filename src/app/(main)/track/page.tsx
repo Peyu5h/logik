@@ -313,6 +313,7 @@ export default function TrackPage() {
   const mapRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const sourcesAdded = useRef<Set<string>>(new Set());
+  const autoSelectedRef = useRef(false);
 
   const { data, isLoading, refetch } = useMyShipments();
   const shipments = data?.shipments ?? [];
@@ -340,6 +341,14 @@ export default function TrackPage() {
         s.carrier?.name?.toLowerCase().includes(q)
     );
   }, [shipments, searchQuery]);
+
+  // auto-select first shipment on initial load
+  useEffect(() => {
+    if (!autoSelectedRef.current && filtered.length > 0 && !selectedId) {
+      autoSelectedRef.current = true;
+      setSelectedId(filtered[0]._id);
+    }
+  }, [filtered, selectedId]);
 
   const selected = useMemo(
     () => shipments.find((s) => s._id === selectedId) || null,

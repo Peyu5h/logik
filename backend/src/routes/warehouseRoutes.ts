@@ -9,6 +9,7 @@ import {
   getCarriers,
   getAgentActions,
   evaluateAgentAction,
+  resetAllCongestion,
 } from "../controllers/warehouseController.js";
 
 const router = Router();
@@ -22,6 +23,9 @@ router.get("/carriers", getCarriers);
 // agent actions (learn loop)
 router.get("/agent-actions", getAgentActions);
 router.patch("/agent-actions/:actionId/evaluate", evaluateAgentAction);
+
+// reset all warehouse congestion to below 50%
+router.post("/reset-congestion", resetAllCongestion);
 
 // get all warehouses (filterable by region, status)
 router.get("/", getWarehouses);

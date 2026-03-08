@@ -2,6 +2,49 @@ import { Request, Response } from "express";
 import prisma from "../config/database.js";
 import ApiResponse from "../utils/apiResponse.js";
 
+// resets all warehouses to below 50% congestion
+export const resetAllCongestion = async (req: Request, res: Response) => {
+  try {
+    const warehouses = await prisma.warehouse.findMany();
+
+    const results: any[] = [];
+    for (const wh of warehouses) {
+      const newLoad = Math.floor(wh.capacity * (Math.random() * 0.3 + 0.1));
+      const newUtil = Math.round((newLoad / wh.capacity) * 1000) / 10;
+
+      await prisma.warehouse.update({
+        where: { id: wh.id },
+        data: {
+          currentLoad: newLoad,
+          utilizationPct: newUtil,
+          status: "operational",
+          congestionLevel: "low",
+        },
+      });
+
+      results.push({
+        code: wh.code,
+        name: wh.name,
+        previous_load: wh.currentLoad,
+        new_load: newLoad,
+        previous_utilization: wh.utilizationPct,
+        new_utilization: newUtil,
+        previous_status: wh.status,
+        new_status: "operational",
+      });
+    }
+
+    console.log("[Warehouses] All congestion reset:", results.length, "warehouses");
+    return ApiResponse.success(res, {
+      message: `Reset congestion for ${results.length} warehouses`,
+      warehouses: results,
+    });
+  } catch (error) {
+    console.error("[Warehouses] Error resetting congestion:", error);
+    return ApiResponse.error(res, "Failed to reset congestion", 500);
+  }
+};
+
 // get all warehouses
 export const getWarehouses = async (req: Request, res: Response) => {
   try {

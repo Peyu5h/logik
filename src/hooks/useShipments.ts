@@ -21,7 +21,10 @@ export const shipmentKeys = {
 };
 
 // fetch all shipments with optional filters
-export function useShipments(filters?: Record<string, string>) {
+export function useShipments(
+  filters?: Record<string, string>,
+  options?: { refetchInterval?: number | false }
+) {
   return useQuery({
     queryKey: shipmentKeys.list(filters),
     queryFn: async () => {
@@ -44,6 +47,7 @@ export function useShipments(filters?: Record<string, string>) {
 
       return res.data;
     },
+    refetchInterval: options?.refetchInterval ?? false,
   });
 }
 

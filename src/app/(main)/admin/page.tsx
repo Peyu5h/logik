@@ -14,6 +14,8 @@ import {
   Search,
   TrendingUp,
   ShieldAlert,
+  RotateCcw,
+  Loader2,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Card } from "~/components/ui/card";
@@ -23,7 +25,10 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { useDashboardStats } from "~/hooks/useDashboard";
 import { useShipments, useShipmentStats } from "~/hooks/useShipments";
 import { useWarehouses } from "~/hooks/useWarehouses";
+import { toast } from "sonner";
 import type { Shipment, Warehouse as WarehouseType } from "~/lib/types";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 const statusConfig: Record<
   string,
@@ -205,6 +210,29 @@ export default function AdminDashboard() {
   const [shipmentSearch, setShipmentSearch] = useState("");
   const [shipmentFilter, setShipmentFilter] = useState("all");
   const [warehouseFilter, setWarehouseFilter] = useState("all");
+  const [isResettingCongestion, setIsResettingCongestion] = useState(false);
+
+  const handleResetCongestion = async () => {
+    setIsResettingCongestion(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/warehouses/reset-congestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(data.data?.message || "Congestion reset for all warehouses");
+        refetchWarehouses();
+        refetchDashboard();
+      } else {
+        toast.error(data.error?.[0]?.message || "Failed to reset congestion");
+      }
+    } catch {
+      toast.error("Failed to connect to server");
+    } finally {
+      setIsResettingCongestion(false);
+    }
+  };
 
   const shipments = shipmentsData?.shipments ?? [];
   const warehouses = warehousesData?.warehouses ?? [];
@@ -385,10 +413,26 @@ export default function AdminDashboard() {
         <div className="hidden lg:flex w-80 xl:w-96 flex-col overflow-hidden">
           {/* warehouses section */}
           <div className="flex flex-col flex-1 overflow-hidden border-b">
-            <div className="shrink-0 flex items-center justify-between border-b px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <Warehouse className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Warehouses</span>
+            <div className="shrink-0 flex flex-col border-b px-4 py-2.5 gap-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Warehouse className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Warehouses</span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResetCongestion}
+                  disabled={isResettingCongestion}
+                  className="h-6 gap-1 text-[10px] px-2"
+                >
+                  {isResettingCongestion ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-3 w-3" />
+                  )}
+                  Reset Congestion
+                </Button>
               </div>
               <div className="flex items-center gap-1">
                 {["all", "operational", "congested", "degraded"].map((f) => (

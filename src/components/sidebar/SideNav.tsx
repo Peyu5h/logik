@@ -79,33 +79,17 @@ export default function SideNav() {
             </div>
           ) : (
             <svg
-              width="32"
-              height="32"
-              viewBox="0 0 32 32"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <rect width="32" height="32" rx="8" className="fill-primary" />
-              <path
-                d="M8 12h16M8 16h16M8 20h16"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                className="stroke-primary-foreground/40"
-              />
-              <path
-                d="M10 10l6 3-6 3V10z"
-                className="fill-primary-foreground"
-              />
-              <circle cx="22" cy="13" r="2.5" className="fill-primary-foreground/80" />
-              <path
-                d="M18 19l4 4"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                className="stroke-primary-foreground/60"
-              />
-            </svg>
+              width={24}
+              height={24}
+                viewBox="0 0 24 19"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M24 1.45201L21.0209 0L13.0852 6.28568L16.0713 8.62844L20.32 5.26421V13.7462L2.93911 0.0889008L0 1.52523V17.548L2.97911 19L10.8609 12.7561L7.87479 10.4134L3.67998 13.7358V5.32524L21.0522 18.9878L24 17.548V1.45201Z"
+                  fill="currentColor"
+                />
+              </svg>
           )}
         </div>
 

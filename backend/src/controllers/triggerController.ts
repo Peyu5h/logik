@@ -774,13 +774,60 @@ async function handleArrivedWarehouse(res: Response, shipment: any) {
 // ─── CONGESTION trigger ───
 // sets a warehouse to 100% utilization (congested), reroutes in-transit shipments
 // through nearest available warehouse (e.g. Ghaziabad for Delhi NCR route)
+// haversine distance in km between two lat/lng points
+function geoDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// finds nearest available warehouse by geo distance to the congested one
+async function findNearestAlternateWarehouse(
+  congestedWarehouse: any
+): Promise<any | null> {
+  const candidates = await prisma.warehouse.findMany({
+    where: {
+      isActive: true,
+      id: { not: congestedWarehouse.id },
+      status: { in: ["operational", "degraded"] },
+      congestionLevel: { in: ["low", "moderate"] },
+    },
+  });
+
+  if (candidates.length === 0) return null;
+
+  const congestedLat = congestedWarehouse.location?.lat || 0;
+  const congestedLng = congestedWarehouse.location?.lng || 0;
+
+  // sort by geo distance to the congested warehouse
+  const sorted = candidates
+    .map((w) => ({
+      warehouse: w,
+      distance: geoDistanceKm(
+        congestedLat,
+        congestedLng,
+        (w as any).location?.lat || 0,
+        (w as any).location?.lng || 0
+      ),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  return sorted[0]?.warehouse || null;
+}
+
 async function handleCongestion(req: Request, res: Response) {
   try {
     const { shipmentId: warehouseCode } = req.params;
-    const { carrierId: newCarrierId } = req.body;
     const now = new Date();
 
-    // find the target warehouse to congest
+    // find the target warehouse to congest (the one the shipment is heading to)
     const warehouse = await prisma.warehouse.findFirst({
       where: { code: warehouseCode as string },
     });
@@ -805,16 +852,8 @@ async function handleCongestion(req: Request, res: Response) {
       { warehouseCode: warehouse.code, capacity: warehouse.capacity }
     );
 
-    // find nearest available warehouse to reroute through
-    const alternateWarehouse = await prisma.warehouse.findFirst({
-      where: {
-        isActive: true,
-        id: { not: warehouse.id },
-        status: { in: ["operational", "degraded"] },
-        congestionLevel: { in: ["low", "moderate"] },
-      },
-      orderBy: { utilizationPct: "asc" },
-    });
+    // find nearest alternate warehouse by geo distance
+    const alternateWarehouse = await findNearestAlternateWarehouse(warehouse);
 
     if (!alternateWarehouse) {
       return ApiResponse.success(res, {
@@ -826,7 +865,7 @@ async function handleCongestion(req: Request, res: Response) {
       });
     }
 
-    // find all in-transit shipments that have this warehouse in their route
+    // find all active shipments that have this warehouse as a PENDING future waypoint
     const allShipments = await prisma.shipment.findMany({
       where: {
         status: { in: ["in_transit", "pending", "at_warehouse"] },
@@ -842,49 +881,79 @@ async function handleCongestion(req: Request, res: Response) {
 
     for (const shipment of allShipments) {
       const waypoints: any[] = (shipment as any).routeWaypoints || [];
+      // only match pending waypoints (not in_transit — that's the one already departed from)
       const pendingWpIdx = waypoints.findIndex(
-        (wp: any) => wp.warehouseCode === warehouse.code && (wp.status === "pending" || wp.status === "in_transit")
+        (wp: any) => wp.warehouseCode === warehouse.code && wp.status === "pending"
       );
 
       if (pendingWpIdx === -1) continue;
 
-      // reroute this waypoint to the alternate warehouse
+      const altLoc = (alternateWarehouse as any).location || {};
+
+      // reroute this waypoint to the nearest alternate warehouse
       waypoints[pendingWpIdx] = {
         ...waypoints[pendingWpIdx],
         warehouseCode: alternateWarehouse.code,
         warehouseName: alternateWarehouse.name,
-        city: (alternateWarehouse as any).location?.city || alternateWarehouse.name,
-        region: (alternateWarehouse as any).location?.region || waypoints[pendingWpIdx].region,
-        lat: (alternateWarehouse as any).location?.lat || waypoints[pendingWpIdx].lat,
-        lng: (alternateWarehouse as any).location?.lng || waypoints[pendingWpIdx].lng,
-        status: waypoints[pendingWpIdx].status === "in_transit" ? "in_transit" : "pending",
+        city: altLoc.city || alternateWarehouse.name,
+        region: altLoc.region || waypoints[pendingWpIdx].region,
+        lat: altLoc.lat || waypoints[pendingWpIdx].lat,
+        lng: altLoc.lng || waypoints[pendingWpIdx].lng,
+        status: "pending",
       };
 
       const shipUpdateData: any = {
         routeWaypoints: waypoints,
         rerouted: true,
         updatedAt: now,
-        agentNotes: `Rerouted via ${alternateWarehouse.name} (${(alternateWarehouse as any).location?.city || ""}) due to congestion at ${warehouse.name}.`,
+        agentNotes: `Rerouted via ${alternateWarehouse.name} (${altLoc.city || ""}) due to congestion at ${warehouse.name}. Carrier auto-reassigned.`,
       };
 
       // if shipment is currently at the congested warehouse, move it
       if (shipment.warehouseId === warehouse.id) {
         shipUpdateData.warehouseId = alternateWarehouse.id;
+      }
+
+      // update current location so map reflects the reroute immediately
+      // place the carrier between its last in_transit/completed waypoint and the new alternate
+      const sortedWps = [...waypoints].sort((a: any, b: any) => a.order - b.order);
+      const transitOrCompleted = sortedWps.filter(
+        (wp: any) => wp.status === "completed" || wp.status === "in_transit"
+      );
+      const lastDeparted = transitOrCompleted.length > 0
+        ? transitOrCompleted.sort((a: any, b: any) => b.order - a.order)[0]
+        : null;
+
+      if (lastDeparted && altLoc.lat && altLoc.lng) {
+        // midpoint between last departed waypoint and the new alternate
+        const midLat = (lastDeparted.lat + altLoc.lat) / 2;
+        const midLng = (lastDeparted.lng + altLoc.lng) / 2;
         shipUpdateData.currentLocation = {
-          lat: (alternateWarehouse as any).location?.lat,
-          lng: (alternateWarehouse as any).location?.lng,
+          lat: midLat,
+          lng: midLng,
+          address: `En route to ${altLoc.city || alternateWarehouse.name}`,
+          city: altLoc.city || alternateWarehouse.name,
+          region: altLoc.region || "",
+        };
+      } else if (altLoc.lat && altLoc.lng) {
+        shipUpdateData.currentLocation = {
+          lat: altLoc.lat,
+          lng: altLoc.lng,
           address: alternateWarehouse.name,
-          city: (alternateWarehouse as any).location?.city,
-          region: (alternateWarehouse as any).location?.region,
+          city: altLoc.city || alternateWarehouse.name,
+          region: altLoc.region || "",
         };
       }
 
-      // optionally swap carrier if provided
-      if (newCarrierId) {
-        const newCarrier = await prisma.carrier.findUnique({ where: { id: newCarrierId } });
-        if (newCarrier) {
-          shipUpdateData.previousCarrierId = shipment.carrierId;
-          shipUpdateData.carrierId = newCarrier.id;
+      // auto-reassign carrier: pick best available carrier for the destination region
+      const destRegion = (shipment as any).destination?.region || "";
+      const bestCarrier = await findBestCarrier(shipment.carrierId, destRegion);
+      if (bestCarrier) {
+        shipUpdateData.previousCarrierId = shipment.carrierId;
+        shipUpdateData.carrierId = bestCarrier.id;
+
+        if (shipment.carrierId) {
+          await degradeCarrierReliability(shipment.carrierId, 5, "congestion_reroute");
         }
       }
 
@@ -902,13 +971,15 @@ async function handleCongestion(req: Request, res: Response) {
         trackingId: shipment.trackingId,
         oldRoute: warehouse.code,
         newRoute: alternateWarehouse.code,
+        oldCarrier: shipment.carrier?.code || "none",
+        newCarrier: updatedShipment.carrier?.code || "none",
         carrier: updatedShipment.carrier?.code,
         routeWaypoints: waypoints,
       });
 
       await createLog("shipment_rerouted_congestion", "trigger_engine", "high",
-        `Case ${shipment.caseId}: Rerouted from ${warehouse.code} to ${alternateWarehouse.code} due to congestion`,
-        { caseId: shipment.caseId, oldWarehouse: warehouse.code, newWarehouse: alternateWarehouse.code }
+        `Case ${shipment.caseId}: Rerouted from ${warehouse.code} to ${alternateWarehouse.code} (nearest). Carrier: ${shipment.carrier?.code || "none"} -> ${updatedShipment.carrier?.code || "none"}`,
+        { caseId: shipment.caseId, oldWarehouse: warehouse.code, newWarehouse: alternateWarehouse.code, oldCarrier: shipment.carrier?.code, newCarrier: updatedShipment.carrier?.code }
       );
     }
 
@@ -918,7 +989,7 @@ async function handleCongestion(req: Request, res: Response) {
       congestedWarehouse: { code: warehouse.code, name: warehouse.name },
       alternateWarehouse: { code: alternateWarehouse.code, name: alternateWarehouse.name, city: (alternateWarehouse as any).location?.city },
       reroutedCount: reroutedShipments.length,
-      reroutedShipments: reroutedShipments.map((s: any) => ({ caseId: s.caseId, trackingId: s.trackingId })),
+      reroutedShipments: reroutedShipments.map((s: any) => ({ caseId: s.caseId, trackingId: s.trackingId, oldCarrier: s.oldCarrier, newCarrier: s.newCarrier })),
       timestamp: now.toISOString(),
     });
 
@@ -936,7 +1007,7 @@ async function handleCongestion(req: Request, res: Response) {
         city: (alternateWarehouse as any).location?.city,
       },
       reroutedShipments,
-      message: `${warehouse.name} congested. ${reroutedShipments.length} shipment(s) rerouted to ${alternateWarehouse.name}.`,
+      message: `${warehouse.name} congested. ${reroutedShipments.length} shipment(s) rerouted to ${alternateWarehouse.name} (nearest). Carriers auto-reassigned.`,
     });
   } catch (error) {
     console.error("[Trigger] Congestion error:", error);
@@ -1086,10 +1157,15 @@ async function handleResetDemo(res: Response, shipment: any) {
     });
   }
 
-  // reset any congested warehouses back to operational
+  // reset any congested warehouses back to operational with proper load/utilization
   await prisma.warehouse.updateMany({
     where: { status: "congested" },
-    data: { status: "operational", congestionLevel: "low" },
+    data: {
+      status: "operational",
+      congestionLevel: "low",
+      currentLoad: 0,
+      utilizationPct: 0,
+    },
   });
 
   await createLog("trigger_reset_demo", "trigger_engine", "low",
